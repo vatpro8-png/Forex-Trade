@@ -11,7 +11,7 @@
 
 [build.environment]
   NODE_VERSION = "20"
-  NPM_FLAGS = "--no-audit --prefer-offline"
+  CI = "false"
   # Set your live backend API URL in Netlify UI or here:
   # BACKEND_API_URL = "https://api.sfcapitalfx.com"
 
