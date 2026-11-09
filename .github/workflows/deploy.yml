@@ -1,0 +1,57 @@
+name: CI/CD Pipeline & Netlify Deployment
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  validate-build-deploy:
+    name: Build, Verify & Deploy
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 1. Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 2. Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: 3. Clean Install Dependencies
+        run: npm ci
+
+      - name: 4. Strict TypeScript Verification
+        run: npm run typecheck
+
+      - name: 5. Start Backend & Run Automated E2E Tests
+        run: |
+          node server.js &
+          SERVER_PID=$!
+          echo "Server running in background (PID: $SERVER_PID)"
+          sleep 3
+          npm test
+          kill $SERVER_PID || true
+
+      - name: 6. Build Production Bundle (Vite)
+        run: npm run build
+
+      - name: 7. Archive Dist Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sf-capital-fx-dist
+          path: dist/
+          retention-days: 14
+
+      - name: 8. Deploy to Netlify Production
+        if: env.NETLIFY_AUTH_TOKEN != ''
+        env:
+          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID || 'eaaf9414-9590-4c13-b6a1-e589e89ed250' }}
+        run: |
+          echo "Deploying dist/ to Netlify Site ID: $NETLIFY_SITE_ID..."
+          npx netlify-cli deploy --dir=dist --prod --site="$NETLIFY_SITE_ID" --auth="$NETLIFY_AUTH_TOKEN"
