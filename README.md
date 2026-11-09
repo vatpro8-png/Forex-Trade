@@ -1,6 +1,6 @@
 # Forex-Trade — SF CAPITAL FX Automated Signal Platform MVP
 
-[![Netlify Status](https://api.netlify.com/api/v1/badges/eaaf9414-9590-4c13-b6a1-e589e89ed250/deploy-status)](https://app.netlify.com/projects/sfcapitalsf/deploys)
+[![CI/CD Pipeline](https://github.com/vatpro8-png/Forex-Trade/actions/workflows/deploy.yml/badge.svg)](https://github.com/vatpro8-png/Forex-Trade/actions/workflows/deploy.yml)
 [![Live Platform](https://img.shields.io/badge/Live%20Platform-sfcapitalsf.netlify.app-00C7B7?style=flat&logo=netlify)](https://sfcapitalsf.netlify.app)
 [![Telegram VIP](https://img.shields.io/badge/Telegram-@sfcapitalfrx-2CA5E0?style=flat&logo=telegram)](https://t.me/sfcapitalfrx)
 
@@ -285,4 +285,3 @@ All rights reserved.
 - **Website:** https://sfcapitalfx.com
 - **Support:** support@sfcapitalfx.com
 - **Admin:** admin@sfcapitalfx.com
->>>>>>> 0b04e7b (Initial commit)
