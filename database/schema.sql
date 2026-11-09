@@ -123,3 +123,4 @@ CREATE INDEX IF NOT EXISTS idx_signals_pair_time ON signals(pair, signal_time DE
 CREATE INDEX IF NOT EXISTS idx_subscriptions_user ON subscriptions(user_id, status);
 CREATE INDEX IF NOT EXISTS idx_telegram_pending ON telegram_deliveries(status) WHERE status = 'PENDING';
 CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at DESC);
+

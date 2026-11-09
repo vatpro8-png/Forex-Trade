@@ -56,3 +56,4 @@ INSERT INTO site_settings (key, value) VALUES
 ('official_channels', '{"telegram": "https://t.me/sfcapitalfrx", "facebook": "https://web.facebook.com/profile.php?id=61594920310389", "youtube": "https://www.youtube.com/@SFCAPITALFX"}'::jsonb),
 ('pricing', '{"price_usd": 100, "duration_days": 30, "currency": "USD"}'::jsonb)
 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;
+
