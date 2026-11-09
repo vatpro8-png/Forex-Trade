@@ -1,5 +1,9 @@
 # Forex-Trade — SF CAPITAL FX Automated Signal Platform MVP
 
+[![Netlify Status](https://api.netlify.com/api/v1/badges/eaaf9414-9590-4c13-b6a1-e589e89ed250/deploy-status)](https://app.netlify.com/projects/sfcapitalsf/deploys)
+[![Live Platform](https://img.shields.io/badge/Live%20Platform-sfcapitalsf.netlify.app-00C7B7?style=flat&logo=netlify)](https://sfcapitalsf.netlify.app)
+[![Telegram VIP](https://img.shields.io/badge/Telegram-@sfcapitalfrx-2CA5E0?style=flat&logo=telegram)](https://t.me/sfcapitalfrx)
+
 > Client-based Platform for TradingView Pine Script → Webhook API → Backend Server → Database → Website + Telegram Bot
 
 ## Overview
