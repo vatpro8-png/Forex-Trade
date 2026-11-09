@@ -1,0 +1,107 @@
+# ==============================================================================
+# SF CAPITAL FX / Forex-Trade — Netlify Production Configuration
+# Site: sfcapitalfx.netlify.app
+# Repository: https://github.com/vatpro8-png/Forex-Trade
+# ==============================================================================
+
+[build]
+  command = "npm run build"
+  publish = "dist"
+  functions = "netlify/functions"
+
+[build.environment]
+  NODE_VERSION = "20"
+  NPM_FLAGS = "--no-audit --prefer-offline"
+  # Set your live backend API URL in Netlify UI or here:
+  # BACKEND_API_URL = "https://api.sfcapitalfx.com"
+
+# ------------------------------------------------------------------------------
+# Production Context
+# ------------------------------------------------------------------------------
+[context.production]
+  environment = { NODE_ENV = "production" }
+
+# ------------------------------------------------------------------------------
+# Deploy Previews (PR / Review Configuration)
+# Automatically builds for pull requests so you can review changes before merge
+# ------------------------------------------------------------------------------
+[context.deploy-preview]
+  command = "npm run build"
+  environment = { NODE_ENV = "preview", VITE_IS_PREVIEW = "true" }
+
+# ------------------------------------------------------------------------------
+# Branch Deploys (e.g., staging / develop)
+# ------------------------------------------------------------------------------
+[context.branch-deploy]
+  command = "npm run build"
+  environment = { NODE_ENV = "staging" }
+
+# ==============================================================================
+# Redirects & Rewrites (Order is important)
+# ==============================================================================
+
+# 1. Netlify Serverless Functions Routing for Webhooks & Signals (if running serverless)
+[[redirects]]
+  from = "/api/webhooks/tradingview"
+  to = "/.netlify/functions/tradingview-webhook"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/api/signals"
+  to = "/.netlify/functions/signals"
+  status = 200
+  force = false
+
+# 2. Proxy to Dedicated C++ / Node Backend (Optional: uncomment when hosting separate API)
+# [[redirects]]
+#   from = "/api/*"
+#   to = "https://api.sfcapitalfx.com/api/:splat"
+#   status = 200
+#   force = true
+#   headers = { X-Forwarded-Proto = "https" }
+
+# 3. Single Page Application (SPA) Fallback Route
+# All non-static asset routes are handed to React router in index.html
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+# ==============================================================================
+# Security & Performance Headers
+# ==============================================================================
+
+# Global security headers for all HTML and routes
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "DENY"
+    X-Content-Type-Options = "nosniff"
+    X-XSS-Protection = "1; mode=block"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Permissions-Policy = "camera=(), microphone=(), geolocation=(), payment=()"
+    Strict-Transport-Security = "max-age=31536000; includeSubDomains; preload"
+    Content-Security-Policy = """
+      default-src 'self';
+      script-src 'self' 'unsafe-inline' 'unsafe-eval' https://*.netlify.app https://fonts.googleapis.com;
+      style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
+      font-src 'self' https://fonts.gstatic.com data:;
+      img-src 'self' data: https:;
+      connect-src 'self' http://127.0.0.1:* http://localhost:* https://*.netlify.app https://api.telegram.org https://api.sfcapitalfx.com;
+      frame-ancestors 'none';
+      base-uri 'self';
+      form-action 'self';
+    """
+
+# Immutable Caching for Vite Hashed Static Assets
+[[headers]]
+  for = "/assets/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+# Never cache index.html so users always get the latest release instantly
+[[headers]]
+  for = "/index.html"
+  [headers.values]
+    Cache-Control = "no-cache, no-store, must-revalidate"
