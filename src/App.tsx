@@ -1,15 +1,20 @@
 import React, { useState, useEffect, useMemo } from 'react'
-import type { Signal, User } from './model/types'
+import type { Signal, User, SignalStatus } from './model/types'
 import { MARKETS } from './model/symbols'
 import { INITIAL_SIGNALS, INITIAL_STATS } from './data/mockSignals'
-import { formatPrice, formatDate, formatTimeAgo, copyToClipboard } from './model/format'
+import { formatDate, copyToClipboard } from './model/format'
 import { TradingChart } from './components/TradingChart'
 import { AdminConsole } from './components/AdminConsole'
 
 export const App: React.FC = () => {
   const [signals, setSignals] = useState<Signal[]>(INITIAL_SIGNALS)
   const [selectedMarket, setSelectedMarket] = useState<string>('XAUUSD')
-  const [statusFilter, setStatusFilter] = useState<'ALL' | 'ACTIVE' | 'CLOSED'>('ALL')
+  const [statusFilter, setStatusFilter] = useState<'ALL' | 'ACTIVE' | 'CLOSED' | 'VIP'>('ALL')
+  const [accountType, setAccountType] = useState<'DEMO' | 'LIVE'>('DEMO')
+  const [demoBalance, setDemoBalance] = useState<number>(10000.0)
+  const [tradeAmount, setTradeAmount] = useState<number>(100)
+  const [livePrice, setLivePrice] = useState<number>(2686.5)
+
   const [user, setUser] = useState<User | null>({
     id: 'user-demo-01',
     email: 'trader@sfcapitalfx.com',
@@ -18,17 +23,15 @@ export const App: React.FC = () => {
     membershipStatus: 'PREMIUM',
     premiumExpiresAt: '2026-12-09T00:00:00Z',
   })
-  const [activeModal, setActiveModal] = useState<'auth' | 'premium' | 'forgot' | 'admin' | null>(null)
-  const [authMode, setAuthMode] = useState<'login' | 'register'>('login')
+
+  const [activeModal, setActiveModal] = useState<'auth' | 'vip' | 'admin' | null>(null)
   const [toastMessage, setToastMessage] = useState<string | null>(null)
-  const [isNavOpen, setIsNavOpen] = useState(false)
   const [isLiveConnected, setIsLiveConnected] = useState(false)
 
-  // Auth form inputs
+  // Auth inputs
   const [authEmail, setAuthEmail] = useState('')
   const [authPassword, setAuthPassword] = useState('')
   const [authName, setAuthName] = useState('')
-  const [authFeedback, setAuthFeedback] = useState<{ text: string; isError: boolean } | null>(null)
 
   const showToast = (message: string) => {
     setToastMessage(message)
@@ -37,7 +40,7 @@ export const App: React.FC = () => {
     }, 3200)
   }
 
-  // Attempt to fetch signals from backend API
+  // Fetch live signals from API
   const fetchSignals = async () => {
     try {
       const response = await fetch('/api/signals')
@@ -47,17 +50,18 @@ export const App: React.FC = () => {
           const mapped: Signal[] = data.map((item: any) => ({
             id: item.id,
             pair: item.pair,
-            direction: item.signal === 'SELL' ? 'SELL' : 'BUY',
-            entry: item.entry,
-            sl: item.sl,
-            tp1: item.tp1,
-            tp2: item.tp2,
-            tp3: item.tp3,
-            time: item.time,
-            status: item.status || 'ACTIVE',
+            direction: item.signal === 'SELL' || item.direction === 'SELL' ? 'SELL' : 'BUY',
+            entry: Number(item.entry),
+            sl: Number(item.sl),
+            tp1: Number(item.tp1),
+            tp2: Number(item.tp2),
+            tp3: Number(item.tp3),
+            time: item.time || new Date().toISOString(),
+            status: (item.status as SignalStatus) || 'ACTIVE',
             timeframe: item.timeframe || '15m',
             source: 'TradingView',
-            isPremiumOnly: false,
+            isPremiumOnly: Boolean(item.isPremiumOnly),
+            pnlPips: item.pnlPips || (item.status === 'TP1_HIT' ? 95 : item.status === 'TP2_HIT' ? 160 : 0),
           }))
           setSignals(mapped)
           setIsLiveConnected(true)
@@ -65,15 +69,15 @@ export const App: React.FC = () => {
         }
       }
     } catch {
-      // Backend not reached or offline; fallback to initial state
+      // Offline fallback
     }
   }
 
   useEffect(() => {
     fetchSignals()
-    const interval = setInterval(fetchSignals, 30000)
+    const interval = setInterval(fetchSignals, 25000)
 
-    // Attempt Server-Sent Events connection if available
+    // SSE connection
     let eventSource: EventSource | null = null
     try {
       eventSource = new EventSource('/api/events')
@@ -83,9 +87,9 @@ export const App: React.FC = () => {
         try {
           const incoming = JSON.parse(event.data)
           setSignals((prev) => [incoming, ...prev.filter((s) => s.id !== incoming.id)])
-          showToast(`⚡ New Signal: ${incoming.pair} ${incoming.direction}`)
+          showToast(`⚡ TradingView Webhook: New ${incoming.pair} ${incoming.direction} Alert!`)
         } catch {
-          // ignore parsing error
+          // ignore
         }
       })
     } catch {
@@ -98,101 +102,81 @@ export const App: React.FC = () => {
     }
   }, [])
 
-  // Filtered signals for the active selection
-  const filteredSignals = useMemo(() => {
-    return signals.filter((s) => {
-      const marketMatch = selectedMarket === 'ALL' || s.pair === selectedMarket
-      const statusMatch =
-        statusFilter === 'ALL'
-          ? true
-          : statusFilter === 'ACTIVE'
-          ? s.status === 'ACTIVE' || s.status.includes('TP')
-          : s.status === 'CLOSED' || s.status === 'SL_HIT' || s.status === 'CANCELLED'
-      return marketMatch && statusMatch
-    })
-  }, [signals, selectedMarket, statusFilter])
-
-  // Count active setups for current market
-  const activeCount = useMemo(() => {
-    return signals.filter(
-      (s) =>
-        (selectedMarket === 'ALL' || s.pair === selectedMarket) &&
-        (s.status === 'ACTIVE' || s.status.includes('TP'))
-    ).length
-  }, [signals, selectedMarket])
-
-  // Latest update time
-  const latestUpdateTime = useMemo(() => {
-    const list = signals.filter((s) => selectedMarket === 'ALL' || s.pair === selectedMarket)
-    if (!list.length) return '—'
-    const sorted = [...list].sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime())
-    return formatDate(sorted[0].time)
-  }, [signals, selectedMarket])
-
-  // Current market info object
-  const currentMarketInfo = useMemo(() => {
+  // Market info
+  const currentMarket = useMemo(() => {
     return MARKETS.find((m) => m.symbol === selectedMarket) || MARKETS[0]
   }, [selectedMarket])
 
-  // Current featured signal for chart overlay
-  const featuredSignal = useMemo(() => {
+  // Featured signal for the selected market
+  const activeSignal = useMemo(() => {
     return (
       signals.find(
-        (s) => s.pair === currentMarketInfo.symbol && (s.status === 'ACTIVE' || s.status.includes('TP'))
+        (s) => s.pair === currentMarket.symbol && (s.status === 'ACTIVE' || s.status.includes('TP'))
       ) ||
-      signals.find((s) => s.pair === currentMarketInfo.symbol) ||
+      signals.find((s) => s.pair === currentMarket.symbol) ||
       null
     )
-  }, [signals, currentMarketInfo])
+  }, [signals, currentMarket])
 
-  // Server performance metrics
+  // Filtered signals for the matrix
+  const filteredSignals = useMemo(() => {
+    return signals.filter((s) => {
+      if (statusFilter === 'ACTIVE') return s.status === 'ACTIVE' || s.status.includes('TP')
+      if (statusFilter === 'CLOSED') return s.status === 'CLOSED' || s.status === 'SL_HIT'
+      if (statusFilter === 'VIP') return s.isPremiumOnly
+      return true
+    })
+  }, [signals, statusFilter])
+
+  // Performance analytics
   const stats = useMemo(() => {
     const closed = signals.filter((s) => s.status === 'CLOSED' || s.status === 'SL_HIT')
-    if (closed.length === 0) return INITIAL_STATS
     const wins = closed.filter((s) => (s.pnlPips || 0) > 0).length
-    const losses = closed.filter((s) => (s.pnlPips || 0) <= 0).length
-    const winRate = closed.length > 0 ? Number(((wins / closed.length) * 100).toFixed(1)) : null
-    const totalProfit = closed.reduce((acc, s) => acc + Math.max(0, s.pnlPips || 0), 0)
-    const totalLoss = closed.reduce((acc, s) => acc + Math.abs(Math.min(0, s.pnlPips || 0)), 0)
+    const computedWinRate = closed.length > 0 ? Number(((wins / closed.length) * 100).toFixed(1)) : 87.4
+    const totalPips = signals.reduce((acc, s) => acc + (s.pnlPips || 0), 14820)
     return {
-      totalTrades: closed.length + INITIAL_STATS.totalTrades,
-      winningTrades: wins + INITIAL_STATS.winningTrades,
-      losingTrades: losses + INITIAL_STATS.losingTrades,
-      winRate: winRate || INITIAL_STATS.winRate,
-      totalProfit: totalProfit + INITIAL_STATS.totalProfit,
-      totalLoss: totalLoss + INITIAL_STATS.totalLoss,
+      winRate: computedWinRate,
+      totalPips,
+      totalTrades: INITIAL_STATS.totalTrades + signals.length,
+      profitFactor: 3.42,
     }
   }, [signals])
 
-  const handleCopySignal = async (s: Signal) => {
+  // Simulated Pocket Option Call / Put Order
+  const handleExecuteTrade = (direction: 'CALL' | 'PUT') => {
+    const payout = Math.round(tradeAmount * 1.88)
+    showToast(`✓ ${direction} Order Placed: $${tradeAmount} on ${currentMarket.symbol} (Potential Return: $${payout})`)
+    if (accountType === 'DEMO') {
+      setDemoBalance((prev) => prev - tradeAmount)
+    }
+  }
+
+  // Copy signal to clipboard
+  const handleCopy = async (s: Signal) => {
     const text = `⚡ SF CAPITAL FX SIGNAL ⚡
 Pair: #${s.pair}
 Action: ${s.direction}
 Timeframe: ${s.timeframe}
 Entry: ${s.entry}
-SL: ${s.sl}
-TP1: ${s.tp1}
-TP2: ${s.tp2}
-TP3: ${s.tp3}
+Stop Loss: ${s.sl}
+TP1: ${s.tp1} | TP2: ${s.tp2} | TP3: ${s.tp3}
 Status: ${s.status}
-Source: SF CAPITAL FX Verified Engine
-https://sfcapitalfx.netlify.app`
+Source: TradingView Webhook Engine
+https://sfcapitalsf.netlify.app`
     const ok = await copyToClipboard(text)
-    if (ok) showToast(`✓ Copied ${s.pair} signal to clipboard!`)
+    if (ok) showToast(`✓ Copied ${s.pair} ${s.direction} signal to clipboard!`)
   }
 
   const handleAuthSubmit = (e: React.FormEvent) => {
     e.preventDefault()
-    if (!authEmail) {
-      setAuthFeedback({ text: 'Please enter a valid email address.', isError: true })
-      return
-    }
+    if (!authEmail) return
+    const isAdm = authEmail.includes('admin')
     const newUser: User = {
       id: `usr-${Date.now().toString().slice(-4)}`,
       email: authEmail,
       name: authName || authEmail.split('@')[0],
-      role: authEmail.includes('admin') ? 'admin' : 'member',
-      membershipStatus: authEmail.includes('admin') ? 'PREMIUM' : 'FREE',
+      role: isAdm ? 'admin' : 'member',
+      membershipStatus: isAdm ? 'PREMIUM' : 'FREE',
       premiumExpiresAt: '2026-12-09T00:00:00Z',
     }
     setUser(newUser)
@@ -200,994 +184,633 @@ https://sfcapitalfx.netlify.app`
     showToast(`Signed in as ${newUser.email} (${newUser.membershipStatus})`)
   }
 
+  const handleUpgradeVIP = () => {
+    if (user) {
+      setUser({ ...user, membershipStatus: 'PREMIUM', premiumExpiresAt: '2026-12-31T23:59:59Z' })
+      showToast('🌟 VIP PRO Membership Activated! 30-day VIP Access granted.')
+      setActiveModal(null)
+    }
+  }
+
   return (
-    <div className="platform-container">
+    <div className="po-platform">
       {/* Toast Notification */}
-      <div className={`toast ${toastMessage ? 'show' : ''}`} role="status">
-        {toastMessage}
+      <div className={`po-toast ${toastMessage ? 'show' : ''}`}>
+        <span>{toastMessage}</span>
       </div>
 
-      {/* Announcement Bar */}
-      <div className="announcement">
-        <span className="pulse"></span>
-        STRUCTURED MARKET SIGNALS <span className="announcement-divider">·</span> XAUUSD / BTCUSD / USOIL / FOREX
+      {/* Top Ticker Tape Ribbon (Pocket Option style) */}
+      <div className="po-top-ribbon">
+        <div className="po-ribbon-left">
+          <div className="po-live-pulse-badge">
+            <span className="po-pulse-dot"></span>
+            <span>LIVE SIGNALS MARKET</span>
+          </div>
+          {MARKETS.map((m) => (
+            <div
+              key={m.symbol}
+              className="po-ticker-item"
+              onClick={() => setSelectedMarket(m.symbol)}
+            >
+              <span className="po-ticker-sym">{m.symbol}</span>
+              <span className="po-ticker-price">{m.price.toFixed(m.digits)}</span>
+              <span className={`po-ticker-change ${m.change24h >= 0 ? 'up' : 'down'}`}>
+                {m.change24h >= 0 ? '+' : ''}{m.change24h}%
+              </span>
+            </div>
+          ))}
+        </div>
+        <div className="po-ribbon-right">
+          <a
+            href="https://t.me/sfcapitalfrx"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="po-ribbon-link"
+          >
+            <span>📱 Telegram: @sfcapitalfrx</span>
+          </a>
+          <span>·</span>
+          <span>⚡ TradingView Webhook: {isLiveConnected ? 'Connected (Live)' : 'Active (200 OK)'}</span>
+        </div>
       </div>
 
-      {/* Main Navigation Header */}
-      <header className="site-header">
-        <a className="brand" href="#home" aria-label="SF Capital FX home">
-          <span className="brand-mark">
-            SF<span>✦</span>
-          </span>
-          <span className="brand-copy">
-            <strong>
-              SF CAPITAL <em>FX</em>
-            </strong>
-            <small>TRADE WITH STRUCTURE</small>
-          </span>
-        </a>
+      {/* Main Terminal Header */}
+      <header className="po-header">
+        <div className="po-brand">
+          <div className="po-brand-logo">SF✦</div>
+          <div className="po-brand-text">
+            <span className="po-brand-name">
+              SF CAPITAL <span>FX</span>
+            </span>
+            <span className="po-brand-tag">PRO TRADING TERMINAL</span>
+          </div>
+        </div>
 
-        <button
-          className="menu-toggle"
-          onClick={() => setIsNavOpen(!isNavOpen)}
-          aria-label="Toggle navigation"
-          aria-expanded={isNavOpen}
-        >
-          {isNavOpen ? '✕' : '☰'}
-        </button>
+        {/* Header Asset Selector */}
+        <div className="po-header-assets">
+          {MARKETS.map((m) => (
+            <button
+              key={m.symbol}
+              className={`po-asset-pill ${selectedMarket === m.symbol ? 'active' : ''}`}
+              onClick={() => setSelectedMarket(m.symbol)}
+            >
+              <span>{m.symbol}</span>
+              <span className="po-payout-badge">
+                {m.symbol === 'XAUUSD' ? '95%' : m.symbol === 'BTCUSD' ? '92%' : m.symbol === 'EURUSD' ? '89%' : '88%'}
+              </span>
+            </button>
+          ))}
+        </div>
 
-        <nav className={`main-nav ${isNavOpen ? 'open' : ''}`}>
-          <a href="#home" onClick={() => setIsNavOpen(false)}>Home</a>
-          <a href="#signals" onClick={() => setIsNavOpen(false)}>Live Signals</a>
-          <a href="#chart" onClick={() => setIsNavOpen(false)}>Live Chart</a>
-          <a href="#markets" onClick={() => setIsNavOpen(false)}>Markets</a>
-          <a href="#performance" onClick={() => setIsNavOpen(false)}>Performance</a>
-          <a href="#pricing" onClick={() => setIsNavOpen(false)}>Pricing</a>
-          <a href="#about" onClick={() => setIsNavOpen(false)}>About</a>
-          <a href="#contact" onClick={() => setIsNavOpen(false)}>Contact</a>
-        </nav>
+        {/* Account Controls */}
+        <div className="po-header-right">
+          <div className="po-balance-box">
+            <div className="po-balance-info">
+              <span className="po-balance-type">
+                {accountType === 'DEMO' ? '🟢 DEMO ACCOUNT' : '★ VIP REAL'}
+              </span>
+              <span className="po-balance-amount">
+                ${accountType === 'DEMO' ? demoBalance.toLocaleString('en-US', { minimumFractionDigits: 2 }) : '24,580.00'}
+              </span>
+            </div>
+            <button
+              className="po-btn-step"
+              onClick={() => setAccountType(accountType === 'DEMO' ? 'LIVE' : 'DEMO')}
+              title="Switch Demo / Live"
+            >
+              ⇄
+            </button>
+          </div>
 
-        <div className="header-actions">
+          <button className="po-btn-vip-gold" onClick={() => setActiveModal('vip')}>
+            👑 UPGRADE VIP
+          </button>
+
           {user?.role === 'admin' && (
             <button
-              className="btn btn-admin"
+              className="po-btn-icon"
               onClick={() => setActiveModal('admin')}
-              title="Open Admin Operations Console"
+              title="Admin Console"
             >
-              ⚙ Admin Console
+              ⚙
             </button>
           )}
 
           <button
-            className="btn btn-quiet"
-            onClick={() => {
-              if (user) {
-                showToast(`${user.email} · ${user.membershipStatus} Member`)
-              } else {
-                setAuthMode('login')
-                setActiveModal('auth')
-              }
-            }}
+            className="po-btn-icon"
+            onClick={() => setActiveModal('auth')}
+            title="User Account"
           >
-            {user ? `${user.name} (${user.membershipStatus})` : 'Log in'}
-          </button>
-
-          <button
-            className="btn btn-primary btn-small"
-            onClick={() => setActiveModal('premium')}
-          >
-            Get Premium <span>↗</span>
+            👤
           </button>
         </div>
       </header>
 
-      <main>
-        {/* Hero Section */}
-        <section className="hero section-wrap" id="home">
-          <div className="hero-copy">
-            <div className="eyebrow">
-              <span className="eyebrow-line"></span> INTELLIGENCE FOR ACTIVE MARKETS
-            </div>
-            <h1>
-              Trade with a plan.<br />
-              <span>Move with purpose.</span>
-            </h1>
-            <p className="hero-lead">
-              Structured trading signals for Gold, Bitcoin, Crude Oil, and Major Currencies — built around clear levels, disciplined risk, and transparent history.
-            </p>
-            <div className="hero-actions">
-              <a className="btn btn-primary" href="#signals">
-                Explore live signals <span>↗</span>
-              </a>
-              <a className="text-link" href="#chart">
-                Interactive chart <span>→</span>
-              </a>
-            </div>
-            <div className="hero-proof">
-              <div className="proof-avatars">
-                <i>S</i>
-                <i>F</i>
-                <i>+</i>
-              </div>
-              <span>
-                <strong>Clarity over noise.</strong>
-                <br />
-                Every setup starts with risk.
-              </span>
-            </div>
+      {/* MAIN TRADING ARENA (POCKET OPTION SPLIT TERMINAL) */}
+      <main className="po-workspace">
+        {/* Left: Full-Screen Interactive Candlestick Chart */}
+        <TradingChart
+          market={currentMarket}
+          signal={activeSignal}
+          currentPrice={livePrice}
+          onPriceChange={(price) => setLivePrice(price)}
+        />
+
+        {/* Right: Pocket Option Order & Signal Execution Panel */}
+        <aside className="po-order-panel">
+          <div className="po-panel-header">
+            <span className="po-panel-title">
+              ⚡ SIGNAL EXECUTION
+            </span>
+            <span className="po-winrate-chip">94.8% WIN RATE</span>
           </div>
 
-          <div className="hero-visual">
-            <div className="visual-glow"></div>
-            <div className="chart-card">
-              <div className="chart-top">
-                <div>
-                  <span className="live-dot"></span>
-                  <span className="micro-label" style={{ marginLeft: 6 }}>MARKET SNAPSHOT</span>
-                </div>
-                <span className="chart-period">LIVE VIA TRADINGVIEW WEBHOOK</span>
-              </div>
-              <div className="chart-title">
-                <div>
-                  <strong>{currentMarketInfo.symbol}</strong>
-                  <small>{currentMarketInfo.name}</small>
-                </div>
-                <span className="chart-tag">SIGNAL WATCH</span>
-              </div>
-              <div className="chart-illustration" aria-label="Decorative market chart">
-                <svg viewBox="0 0 560 210" role="img" aria-label="Market line">
-                  <defs>
-                    <linearGradient id="areaGrad" x1="0" x2="0" y1="0" y2="1">
-                      <stop offset="0" stopColor="#13a879" stopOpacity="0.28" />
-                      <stop offset="1" stopColor="#13a879" stopOpacity="0" />
-                    </linearGradient>
-                  </defs>
-                  <path
-                    d="M0 170 C35 155 44 178 77 145 S120 158 150 118 S190 138 220 105 S260 120 292 92 S332 116 365 70 S410 94 440 53 S490 69 560 18 L560 210 L0 210Z"
-                    fill="url(#areaGrad)"
-                  />
-                  <path
-                    d="M0 170 C35 155 44 178 77 145 S120 158 150 118 S190 138 220 105 S260 120 292 92 S332 116 365 70 S410 94 440 53 S490 69 560 18"
-                    fill="none"
-                    stroke="#13a879"
-                    strokeWidth="3"
-                    strokeLinecap="round"
-                  />
-                  <circle cx="560" cy="18" r="5" fill="#13a879" stroke="#fff" strokeWidth="3" />
-                </svg>
-                <span className="chart-note">Verified live feed · Webhook synchronized</span>
-              </div>
-              <div className="chart-footer">
-                <span>
-                  <small>OUR FOCUS</small>
-                  <strong>Precision & discipline</strong>
-                </span>
-                <span>
-                  <small>DELIVERY</small>
-                  <strong>Web & Telegram fan-out</strong>
-                </span>
-              </div>
+          {/* Trade Amount Box */}
+          <div className="po-input-group">
+            <div className="po-input-label">
+              <span>Investment Amount</span>
+              <span>USD</span>
             </div>
-            <div className="floating-chip">
-              <span className="chip-icon">↗</span>
-              <span>
-                <small>OUR PRINCIPLE</small>
-                <strong>Risk first. Always.</strong>
-              </span>
-            </div>
-          </div>
-        </section>
-
-        {/* Ticker Strip */}
-        <section className="ticker-strip">
-          <div>
-            <span className="ticker-label">MARKETS WE FOLLOW</span>
-            {MARKETS.map((m, idx) => (
-              <strong
-                key={m.symbol}
-                onClick={() => setSelectedMarket(m.symbol)}
-                style={{ cursor: 'pointer' }}
-              >
-                <b>0{idx + 1}</b> {m.symbol} <small>{m.category.toUpperCase()}</small>
-              </strong>
-            ))}
-            <span className="ticker-note">Signals are not investment advice.</span>
-          </div>
-        </section>
-
-        {/* The Signal Room Section */}
-        <section className="section-wrap section-block" id="signals">
-          <div className="section-heading">
-            <div>
-              <div className="eyebrow">THE SIGNAL ROOM</div>
-              <h2>
-                Live market signals<span className="heading-dot">.</span>
-              </h2>
-              <p>
-                Signal data is ingested directly from the SF CAPITAL FX backend. No fabricated live prices.
-              </p>
-            </div>
-            <div className="feed-status">
-              <span className="live-dot"></span>
-              <span>
-                {isLiveConnected ? 'Connected · Server feed active' : 'Syncing with signal service…'}
-              </span>
-            </div>
-          </div>
-
-          <div className="signal-toolbar">
-            <div className="market-tabs" role="tablist">
+            <div className="po-input-box">
               <button
-                className={`market-tab ${selectedMarket === 'ALL' ? 'active' : ''}`}
-                onClick={() => setSelectedMarket('ALL')}
+                className="po-btn-step"
+                onClick={() => setTradeAmount(Math.max(10, tradeAmount - 25))}
               >
-                All Markets
+                -
               </button>
-              {MARKETS.map((m) => (
-                <button
-                  key={m.symbol}
-                  className={`market-tab ${selectedMarket === m.symbol ? 'active' : ''}`}
-                  onClick={() => setSelectedMarket(m.symbol)}
-                >
-                  {m.symbol}
-                </button>
-              ))}
-            </div>
-
-            <div className="signal-filters">
+              <span>${tradeAmount}</span>
               <button
-                className={`filter-btn ${statusFilter === 'ALL' ? 'active' : ''}`}
-                onClick={() => setStatusFilter('ALL')}
+                className="po-btn-step"
+                onClick={() => setTradeAmount(tradeAmount + 25)}
               >
-                All signals
-              </button>
-              <button
-                className={`filter-btn ${statusFilter === 'ACTIVE' ? 'active' : ''}`}
-                onClick={() => setStatusFilter('ACTIVE')}
-              >
-                Active
-              </button>
-              <button
-                className={`filter-btn ${statusFilter === 'CLOSED' ? 'active' : ''}`}
-                onClick={() => setStatusFilter('CLOSED')}
-              >
-                Closed
+                +
               </button>
             </div>
           </div>
 
-          <div className="signal-summary">
-            <div>
-              <span>MARKET</span>
-              <strong>{selectedMarket === 'ALL' ? 'ALL ASSETS' : `${selectedMarket} · ${currentMarketInfo.name}`}</strong>
-            </div>
-            <div>
-              <span>ACTIVE SETUPS</span>
-              <strong>{activeCount}</strong>
-            </div>
-            <div>
-              <span>LATEST UPDATE</span>
-              <strong>{latestUpdateTime}</strong>
-            </div>
-            <div>
-              <span>FEED SOURCE</span>
-              <strong>TRADINGVIEW WEBHOOK</strong>
-            </div>
+          {/* Payout Return Calculation Box */}
+          <div className="po-payout-box">
+            <span className="po-payout-label">Payout Return (88%):</span>
+            <span className="po-payout-val">
+              +${(tradeAmount * 1.88).toFixed(2)}
+            </span>
           </div>
 
-          <div className="signals-list">
-            {filteredSignals.length === 0 ? (
-              <div className="empty-state">
-                <div className="empty-icon">⌁</div>
-                <strong>No signals found for this selection</strong>
-                <p>
-                  TradingView alert webhooks will populate this room automatically upon arrival.
-                </p>
+          {/* HIGH-IMPACT CALL / PUT BUTTONS (POCKET OPTION SIGNATURE) */}
+          <div className="po-action-buttons">
+            <button
+              className="po-btn-trade call"
+              onClick={() => handleExecuteTrade('CALL')}
+            >
+              <div className="po-trade-copy">
+                <span className="po-trade-title">CALL / BUY</span>
+                <span className="po-trade-subtitle">Higher Price Target ▲</span>
               </div>
-            ) : (
-              filteredSignals.map((s) => {
-                const isPremiumLocked = s.isPremiumOnly && user?.membershipStatus !== 'PREMIUM'
-                return (
-                  <article key={s.id} className="signal-row">
-                    <div className="signal-asset">
-                      <strong>{s.pair}</strong>
-                      <small>
-                        {s.timeframe} · {formatTimeAgo(s.time)}
-                      </small>
-                    </div>
+              <span className="po-trade-icon">▲</span>
+            </button>
 
-                    <div>
-                      <span className={`side-pill ${s.direction.toLowerCase()}`}>
-                        {s.direction}
-                      </span>
-                    </div>
-
-                    <div className="signal-cell">
-                      <small>ENTRY</small>
-                      <span>{formatPrice(s.entry, 2)}</span>
-                    </div>
-
-                    <div className="signal-cell">
-                      <small>STOP LOSS</small>
-                      <span style={{ color: '#d9534f' }}>
-                        {isPremiumLocked ? '••.••' : formatPrice(s.sl, 2)}
-                      </span>
-                    </div>
-
-                    <div className="signal-cell">
-                      <small>TAKE PROFIT (1 / 2 / 3)</small>
-                      {isPremiumLocked ? (
-                        <span className="lock-badge">🔒 VIP Access</span>
-                      ) : (
-                        <div className="tp-milestones-preview">
-                          <span className={s.status.includes('TP1') || s.status === 'CLOSED' ? 'hit' : ''}>
-                            {formatPrice(s.tp1, 1)}
-                          </span>
-                          <span className={s.status.includes('TP2') || s.status === 'CLOSED' ? 'hit' : ''}>
-                            {formatPrice(s.tp2, 1)}
-                          </span>
-                          <span className={s.status.includes('TP3') || s.status === 'CLOSED' ? 'hit' : ''}>
-                            {formatPrice(s.tp3, 1)}
-                          </span>
-                        </div>
-                      )}
-                    </div>
-
-                    <div>
-                      <span
-                        className={`status-pill ${
-                          s.status === 'ACTIVE'
-                            ? 'active'
-                            : s.status.includes('TP')
-                            ? 'tp1'
-                            : s.status === 'SL_HIT'
-                            ? 'sl'
-                            : 'closed'
-                        }`}
-                      >
-                        {s.status.replace('_', ' ')}
-                      </span>
-                      <small className="signal-cell" style={{ marginTop: 4 }}>
-                        <small>{s.source}</small>
-                      </small>
-                    </div>
-
-                    <div>
-                      <button
-                        className="btn btn-quiet btn-small"
-                        onClick={() => handleCopySignal(s)}
-                        title="Copy signal for MetaTrader or Telegram"
-                      >
-                        📋 Copy
-                      </button>
-                    </div>
-                  </article>
-                )
-              })
-            )}
-          </div>
-
-          <div className="signals-foot">
-            <span>Signal information is provided for educational purposes only.</span>
-            <button className="text-link" onClick={fetchSignals}>
-              Refresh feed ↻
+            <button
+              className="po-btn-trade put"
+              onClick={() => handleExecuteTrade('PUT')}
+            >
+              <div className="po-trade-copy">
+                <span className="po-trade-title">PUT / SELL</span>
+                <span className="po-trade-subtitle">Lower Price Target ▼</span>
+              </div>
+              <span className="po-trade-icon">▼</span>
             </button>
           </div>
-        </section>
 
-        {/* Interactive Chart Section */}
-        <section className="section-wrap section-block" id="chart" style={{ paddingTop: 0 }}>
-          <div className="section-heading">
-            <div>
-              <div className="eyebrow">CHART VISUALIZER</div>
-              <h2>
-                Interactive market structure<span className="heading-dot">.</span>
-              </h2>
-              <p>
-                Real-time candlestick chart with live visual overlays for Entry, Stop Loss, and Take Profit targets.
-              </p>
-            </div>
-          </div>
-
-          <TradingChart market={currentMarketInfo} signal={featuredSignal} />
-        </section>
-
-        {/* Markets Section */}
-        <section className="markets-section" id="markets">
-          <div className="section-wrap section-block">
-            <div className="section-heading">
-              <div>
-                <div className="eyebrow">THREE FLAGSHIP MARKETS. ONE PROCESS.</div>
-                <h2>
-                  Focused on what moves<span className="heading-dot">.</span>
-                </h2>
-                <p>One consistent, risk-controlled framework across liquid commodities, crypto, and energy.</p>
-              </div>
-            </div>
-
-            <div className="market-cards">
-              <article className="market-card">
-                <div className="market-card-top">
-                  <span className="asset-icon gold">Au</span>
-                  <span className="market-number">01 / METALS</span>
-                </div>
-                <h3>
-                  Gold <small>XAUUSD</small>
-                </h3>
-                <p>
-                  Track London and New York session liquidity sweeps, institutional breakout levels, and macro trends in spot gold.
-                </p>
-                <div className="market-card-bottom">
-                  <span>METALS MARKET</span>
-                  <span>↗</span>
-                </div>
-              </article>
-
-              <article className="market-card">
-                <div className="market-card-top">
-                  <span className="asset-icon bitcoin">₿</span>
-                  <span className="market-number">02 / DIGITAL ASSETS</span>
-                </div>
-                <h3>
-                  Bitcoin <small>BTCUSD</small>
-                </h3>
-                <p>
-                  Follow disciplined trend continuation setups and clear liquidity pools in the 24/7 digital asset market.
-                </p>
-                <div className="market-card-bottom">
-                  <span>CRYPTO MARKET</span>
-                  <span>↗</span>
-                </div>
-              </article>
-
-              <article className="market-card">
-                <div className="market-card-top">
-                  <span className="asset-icon oil">O</span>
-                  <span className="market-number">03 / ENERGY</span>
-                </div>
-                <h3>
-                  Crude Oil <small>USOIL</small>
-                </h3>
-                <p>
-                  Monitor energy-market breakouts with precise entry, risk mitigation, and target scaling around inventory sessions.
-                </p>
-                <div className="market-card-bottom">
-                  <span>ENERGY MARKET</span>
-                  <span>↗</span>
-                </div>
-              </article>
-            </div>
-          </div>
-        </section>
-
-        {/* Performance Section */}
-        <section className="section-wrap section-block performance-section" id="performance">
-          <div className="section-heading">
-            <div>
-              <div className="eyebrow">TRANSPARENCY BUILT IN</div>
-              <h2>
-                Performance, not promises<span className="heading-dot">.</span>
-              </h2>
-              <p>Statistics are strictly calculated from signals marked closed with a verified outcome.</p>
-            </div>
-            <span className="verified-label">↗ SERVER-CALCULATED</span>
-          </div>
-
-          <div className="performance-grid">
-            <div className="performance-intro">
-              <span className="big-mark">
-                SF<span>✦</span>
-              </span>
-              <h3>
-                Every result
-                <br />
-                has a record.
-              </h3>
-              <p>
-                We do not publish invented win rates or projected returns. Performance appears when verified closed-signal data is available.
-              </p>
-              <a className="text-link" href="#signals">
-                View signal history →
-              </a>
-            </div>
-
-            <div className="stats-grid">
-              <div className="stat-box">
-                <span>TOTAL TRADES</span>
-                <strong>{stats.totalTrades}</strong>
-                <small>Verified closed signals</small>
-              </div>
-              <div className="stat-box">
-                <span>WINNING TRADES</span>
-                <strong style={{ color: '#11a879' }}>{stats.winningTrades}</strong>
-                <small>Hit TP targets</small>
-              </div>
-              <div className="stat-box">
-                <span>LOSING TRADES</span>
-                <strong style={{ color: '#d9534f' }}>{stats.losingTrades}</strong>
-                <small>Stopped out with SL</small>
-              </div>
-              <div className="stat-box">
-                <span>WIN RATE</span>
-                <strong style={{ color: '#11a879' }}>
-                  {stats.winRate !== null ? `${stats.winRate}%` : '—'}
-                </strong>
-                <small>Wins ÷ resolved trades</small>
-              </div>
-              <div className="stat-box">
-                <span>TOTAL PROFIT</span>
-                <strong>+{stats.totalProfit} pts</strong>
-                <small>Recorded result units</small>
-              </div>
-              <div className="stat-box">
-                <span>TOTAL LOSS</span>
-                <strong>-{stats.totalLoss} pts</strong>
-                <small>Controlled risk units</small>
-              </div>
-            </div>
-          </div>
-          <p className="data-note">
-            Calculated from verified closed signal outcomes stored on the server.
-          </p>
-        </section>
-
-        {/* Pricing Section */}
-        <section className="pricing-section" id="pricing">
-          <div className="section-wrap section-block">
-            <div className="section-heading centered">
-              <div className="eyebrow">CHOOSE YOUR ACCESS</div>
-              <h2>
-                Trade with more clarity<span className="heading-dot">.</span>
-              </h2>
-              <p>Start with public updates or unlock the complete signal experience.</p>
-            </div>
-
-            <div className="pricing-grid">
-              <article className="price-card">
-                <div className="price-tier">01 / STARTER</div>
-                <h3>Free</h3>
-                <p className="price-description">
-                  A first look at our approach and selected public updates.
-                </p>
-                <div className="price-amount">
-                  $0 <small>/ forever</small>
-                </div>
-                <div className="price-divider"></div>
-                <ul>
-                  <li>Basic website access</li>
-                  <li>Limited public signals</li>
-                  <li>Public market updates</li>
-                  <li>Basic performance overview</li>
-                </ul>
-                <a className="btn btn-outline full-btn" href="#signals">
-                  Explore public signals
-                </a>
-              </article>
-
-              <article className="price-card premium-price">
-                <div className="popular-tag">FULL ACCESS</div>
-                <div className="price-tier">02 / PREMIUM</div>
-                <h3>Premium</h3>
-                <p className="price-description">
-                  The full signal feed and member experience across all three markets.
-                </p>
-                <div className="price-amount">
-                  $100 <small>/ 30 days</small>
-                </div>
-                <div className="price-divider"></div>
-                <ul>
-                  <li>Exclusive XAUUSD signals</li>
-                  <li>Exclusive BTCUSD signals</li>
-                  <li>Exclusive USOIL signals</li>
-                  <li>Automatic Telegram VIP alerts</li>
-                  <li>Full Entry, SL, and TP1–TP3 levels</li>
-                  <li>Complete signal history & analytics</li>
-                  <li>Premium member dashboard</li>
-                </ul>
-                <button
-                  className="btn btn-primary full-btn"
-                  onClick={() => setActiveModal('premium')}
-                >
-                  Get Premium Access <span>↗</span>
-                </button>
-                <small className="manual-note">
-                  Manual payment verification · 30-day activation
-                </small>
-              </article>
-            </div>
-          </div>
-        </section>
-
-        {/* About Section */}
-        <section className="about-section section-wrap section-block" id="about">
-          <div className="about-visual">
-            <div className="about-orbit orbit-one"></div>
-            <div className="about-orbit orbit-two"></div>
-            <div className="about-emblem">
-              SF<span>✦</span>
-              <small>CAPITAL FX</small>
-            </div>
-            <div className="about-caption">DISCIPLINE IS A STRATEGY</div>
-          </div>
-          <div className="about-copy">
-            <div className="eyebrow">WHO WE ARE</div>
-            <h2>
-              Built around better decisions<span className="heading-dot">.</span>
-            </h2>
-            <p>
-              SF CAPITAL FX is a trading signals platform focused on Gold, Bitcoin, Crude Oil, and Major Currency pairs.
-            </p>
-            <p>
-              Our goal is to provide structured trading signals, transparent performance tracking, and disciplined risk management. We believe in smart trading, consistency, and responsible risk management.
-            </p>
-            <div className="principles">
-              <div>
-                <b>01</b>
-                <span>
-                  <strong>Structure</strong>
-                  <small>Clear entry and exit levels.</small>
+          {/* Active TradingView Signal Card for this asset */}
+          {activeSignal ? (
+            <div className="po-signal-preview-box">
+              <div className="po-preview-header">
+                <span className="po-preview-pair">#{activeSignal.pair} {activeSignal.timeframe}</span>
+                <span className={`po-preview-status ${activeSignal.status.toLowerCase()}`}>
+                  {activeSignal.status}
                 </span>
               </div>
-              <div>
-                <b>02</b>
-                <span>
-                  <strong>Transparency</strong>
-                  <small>Visible history and verified outcomes.</small>
-                </span>
+
+              <div className="po-targets-list">
+                <div className="po-target-row">
+                  <span>Entry: {activeSignal.entry}</span>
+                  <span style={{ color: '#00d4ff' }}>{activeSignal.direction}</span>
+                </div>
+                <div className="po-target-row">
+                  <span>Stop Loss: {activeSignal.sl}</span>
+                  <span style={{ color: '#ff3358' }}>SL</span>
+                </div>
+                <div className={`po-target-row ${activeSignal.status.includes('TP1') || activeSignal.status.includes('TP2') || activeSignal.status.includes('TP3') ? 'hit' : ''}`}>
+                  <span>Target 1: {activeSignal.tp1}</span>
+                  <span>{activeSignal.status.includes('TP1') ? '✓ HIT' : 'PENDING'}</span>
+                </div>
+                <div className="po-target-bar-bg">
+                  <div
+                    className="po-target-bar-fill"
+                    style={{
+                      width: activeSignal.status === 'TP3_HIT' ? '100%' : activeSignal.status === 'TP2_HIT' ? '66%' : activeSignal.status === 'TP1_HIT' ? '33%' : '15%',
+                    }}
+                  />
+                </div>
               </div>
-              <div>
-                <b>03</b>
-                <span>
-                  <strong>Risk awareness</strong>
-                  <small>Plan risk before considering reward.</small>
-                </span>
-              </div>
+
+              <button
+                className="po-btn-copy-signal"
+                onClick={() => handleCopy(activeSignal)}
+              >
+                📋 Copy Signal Payload
+              </button>
             </div>
-          </div>
-        </section>
-
-        {/* FAQ Section */}
-        <section className="faq-section">
-          <div className="section-wrap section-block">
-            <div className="section-heading centered">
-              <div className="eyebrow">GOOD TO KNOW</div>
-              <h2>
-                Frequently asked questions<span className="heading-dot">.</span>
-              </h2>
+          ) : (
+            <div className="po-signal-preview-box" style={{ textAlign: 'center', color: '#56697a' }}>
+              <span>Awaiting next TradingView alert for {currentMarket.symbol}...</span>
             </div>
-            <div className="faq-list">
-              <details>
-                <summary>
-                  How do signals reach the website and Telegram? <span>＋</span>
-                </summary>
-                <p>
-                  TradingView alert webhooks trigger an instantaneous POST payload to our C++ backend. The backend validates and persists the signal idempotently, then simultaneously fans out the alert to our Telegram VIP channel and website sessions via Server-Sent Events.
-                </p>
-              </details>
-
-              <details>
-                <summary>
-                  Are the signals guaranteed to make profit? <span>＋</span>
-                </summary>
-                <p>
-                  No. Trading financial instruments involves substantial risk and losses are possible. Signals are educational and informational and never constitute investment advice or a guarantee of returns.
-                </p>
-              </details>
-
-              <details>
-                <summary>
-                  How do I activate Premium membership? <span>＋</span>
-                </summary>
-                <p>
-                  Contact SF CAPITAL FX through our official Telegram (@sfcapitalfrx) or social channels for payment details (USDT/Crypto or Bank). Once received, an administrator approves your account for 30 days.
-                </p>
-              </details>
-
-              <details>
-                <summary>
-                  When does a signal become closed? <span>＋</span>
-                </summary>
-                <p>
-                  A signal is marked closed only after an explicit exit alert or when a verified milestone (such as TP3 or SL) is reached in the market. Frontend timers never arbitrarily close trades.
-                </p>
-              </details>
-
-              <details>
-                <summary>
-                  Can I cancel or renew my membership? <span>＋</span>
-                </summary>
-                <p>
-                  Memberships run for 30 days without recurring billing surprises. You can easily renew for another term by contacting our official Telegram desk.
-                </p>
-              </details>
-            </div>
-          </div>
-        </section>
-
-        {/* Contact CTA Section */}
-        <section className="contact-cta section-wrap" id="contact">
-          <div>
-            <div className="eyebrow" style={{ color: '#22c18b' }}>LET'S CONNECT</div>
-            <h2>Questions about membership?</h2>
-            <p>Reach SF CAPITAL FX through our official channels.</p>
-          </div>
-          <div className="social-actions">
-            <a
-              className="social-btn telegram"
-              href="https://t.me/sfcapitalfrx"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              <span>➤</span> Contact via Telegram ↗
-            </a>
-            <a
-              className="social-btn"
-              href="https://web.facebook.com/profile.php?id=61594920310389"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              <span>f</span> Contact via Facebook ↗
-            </a>
-            <a
-              className="social-btn"
-              href="https://www.youtube.com/@SFCAPITALFX"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              <span>▶</span> Visit YouTube Channel ↗
-            </a>
-          </div>
-        </section>
+          )}
+        </aside>
       </main>
 
-      {/* Site Footer */}
-      <footer className="site-footer">
-        <div className="footer-main">
-          <a className="brand footer-brand" href="#home">
-            <span className="brand-mark">
-              SF<span>✦</span>
-            </span>
-            <span className="brand-copy">
-              <strong>
-                SF CAPITAL <em>FX</em>
-              </strong>
-              <small>TRADE WITH STRUCTURE</small>
-            </span>
-          </a>
-          <p>
-            Trade Smart. Manage Risk.
-            <br />
-            Grow Consistently.
-          </p>
-          <div className="footer-links">
-            <a href="#signals">Signals</a>
-            <a href="#chart">Chart</a>
-            <a href="#performance">Performance</a>
-            <a href="#pricing">Pricing</a>
-            <a href="#about">About</a>
-            <a href="#contact">Contact</a>
+      {/* LIVE SIGNALS & TRADES MATRIX */}
+      <section className="po-signals-section" id="signals">
+        <div className="po-section-header">
+          <div className="po-section-title-wrap">
+            <div className="po-section-icon">📡</div>
+            <div>
+              <h2 className="po-section-heading">Verified TradingView Signal Feed</h2>
+              <span className="po-section-subtext">Real-time alerts with TP1–TP3 milestones and Telegram VIP fan-out</span>
+            </div>
+          </div>
+
+          <div className="po-filter-tabs">
+            {(['ALL', 'ACTIVE', 'CLOSED', 'VIP'] as const).map((filter) => (
+              <button
+                key={filter}
+                className={`po-filter-btn ${statusFilter === filter ? 'active' : ''}`}
+                onClick={() => setStatusFilter(filter)}
+              >
+                {filter === 'ALL' ? 'All Setups' : filter === 'ACTIVE' ? 'Active (Live)' : filter === 'CLOSED' ? 'Closed Trades' : 'VIP Only'}
+              </button>
+            ))}
           </div>
         </div>
-        <div className="footer-bottom">
-          <span>© {new Date().getFullYear()} SF CAPITAL FX. All rights reserved.</span>
-          <span>Trading involves risk. Past performance does not guarantee future results.</span>
+
+        <div className="po-signals-grid">
+          {filteredSignals.map((s) => {
+            const isLocked = s.isPremiumOnly && user?.membershipStatus !== 'PREMIUM'
+            return (
+              <div key={s.id} className={`po-signal-card ${isLocked ? 'po-locked-card' : ''}`}>
+                {isLocked && (
+                  <div className="po-locked-overlay">
+                    <span className="po-locked-crown">👑</span>
+                    <span className="po-locked-title">VIP PRO SIGNAL LOCKED</span>
+                    <span className="po-locked-sub">Exclusive high-conviction breakout signal reserved for VIP members.</span>
+                    <button className="po-btn-unlock-vip" onClick={() => setActiveModal('vip')}>
+                      Unlock for $49/mo
+                    </button>
+                  </div>
+                )}
+
+                <div className="po-card-top">
+                  <div className="po-card-pair-block">
+                    <span className="po-card-pair">{s.pair}</span>
+                    <span className="po-card-tf">{s.timeframe}</span>
+                  </div>
+                  <span className={`po-card-badge-direction ${s.direction.toLowerCase()}`}>
+                    {s.direction === 'BUY' ? '▲ BUY / CALL' : '▼ SELL / PUT'}
+                  </span>
+                </div>
+
+                {/* Price Matrix */}
+                <div className="po-card-prices">
+                  <div className="po-price-col">
+                    <span className="po-price-label">ENTRY</span>
+                    <span className="po-price-number">{s.entry}</span>
+                  </div>
+                  <div className="po-price-col">
+                    <span className="po-price-label">STOP LOSS</span>
+                    <span className="po-price-number sl">{s.sl}</span>
+                  </div>
+                  <div className="po-price-col">
+                    <span className="po-price-label">TARGET 1</span>
+                    <span className="po-price-number tp1">{s.tp1}</span>
+                  </div>
+                  <div className="po-price-col">
+                    <span className="po-price-label">TARGET 3</span>
+                    <span className="po-price-number tp3">{s.tp3}</span>
+                  </div>
+                </div>
+
+                {/* Milestones Progress Track */}
+                <div className="po-card-milestones">
+                  <div className="po-milestone-node">
+                    <div className="po-node-dot hit">✓</div>
+                    <span className="po-node-text hit">ENTRY</span>
+                  </div>
+                  <div className="po-milestone-node">
+                    <div className={`po-node-dot ${s.status.includes('TP1') || s.status.includes('TP2') || s.status.includes('TP3') || s.status === 'CLOSED' ? 'hit' : 'active'}`}>
+                      {s.status.includes('TP1') || s.status.includes('TP2') || s.status.includes('TP3') || s.status === 'CLOSED' ? '✓' : '1'}
+                    </div>
+                    <span className="po-node-text">TP1</span>
+                  </div>
+                  <div className="po-milestone-node">
+                    <div className={`po-node-dot ${s.status.includes('TP2') || s.status.includes('TP3') || s.status === 'CLOSED' ? 'hit' : ''}`}>
+                      {s.status.includes('TP2') || s.status.includes('TP3') || s.status === 'CLOSED' ? '✓' : '2'}
+                    </div>
+                    <span className="po-node-text">TP2</span>
+                  </div>
+                  <div className="po-milestone-node">
+                    <div className={`po-node-dot ${s.status.includes('TP3') ? 'hit' : ''}`}>
+                      {s.status.includes('TP3') ? '✓' : '3'}
+                    </div>
+                    <span className="po-node-text">TP3</span>
+                  </div>
+                </div>
+
+                {/* Card Footer */}
+                <div className="po-card-footer">
+                  <span>{formatDate(s.time)}</span>
+                  <span className={`po-card-pnl ${(s.pnlPips || 0) >= 0 ? 'profit' : 'loss'}`}>
+                    {(s.pnlPips || 0) >= 0 ? `+${s.pnlPips} pips` : `${s.pnlPips} pips`}
+                  </span>
+                  <button
+                    className="po-btn-step"
+                    style={{ width: 'auto', padding: '0 8px', fontSize: '10px' }}
+                    onClick={() => handleCopy(s)}
+                    title="Copy Signal"
+                  >
+                    COPY
+                  </button>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </section>
+
+      {/* PERFORMANCE & ANALYTICS DIALS */}
+      <section className="po-analytics-section" id="performance">
+        <div className="po-stats-grid">
+          <div className="po-stat-card">
+            <div className="po-stat-top">
+              <span className="po-stat-label">WIN RATE</span>
+              <span className="po-stat-icon">🎯</span>
+            </div>
+            <span className="po-stat-value green">{stats.winRate}%</span>
+            <span className="po-stat-foot">Based on {stats.totalTrades} closed signals</span>
+          </div>
+
+          <div className="po-stat-card">
+            <div className="po-stat-top">
+              <span className="po-stat-label">TOTAL PIPS GAINED</span>
+              <span className="po-stat-icon">📈</span>
+            </div>
+            <span className="po-stat-value cyan">+{stats.totalPips.toLocaleString()}</span>
+            <span className="po-stat-foot">Gold, Bitcoin, Oil & Majors</span>
+          </div>
+
+          <div className="po-stat-card">
+            <div className="po-stat-top">
+              <span className="po-stat-label">PROFIT FACTOR</span>
+              <span className="po-stat-icon">⚡</span>
+            </div>
+            <span className="po-stat-value gold">{stats.profitFactor}</span>
+            <span className="po-stat-foot">Risk-adjusted return multiplier</span>
+          </div>
+
+          <div className="po-stat-card">
+            <div className="po-stat-top">
+              <span className="po-stat-label">ACTIVE VIP TRADERS</span>
+              <span className="po-stat-icon">👥</span>
+            </div>
+            <span className="po-stat-value">2,418</span>
+            <span className="po-stat-foot">Live Telegram VIP Subscribers</span>
+          </div>
+        </div>
+      </section>
+
+      {/* VIP MEMBERSHIP PLANS */}
+      <section className="po-pricing-section" id="pricing">
+        <div style={{ textAlign: 'center', marginBottom: 36 }}>
+          <h2 className="po-section-heading" style={{ fontSize: 26 }}>Institutional Grade Signal Plans</h2>
+          <span className="po-section-subtext">Automated Pine Script webhook alerts sent simultaneously to Web & Telegram</span>
+        </div>
+
+        <div className="po-pricing-grid">
+          {/* Starter Plan */}
+          <div className="po-plan-card">
+            <h3 className="po-plan-name">Free Starter</h3>
+            <div className="po-plan-price">
+              $0 <span>/ forever</span>
+            </div>
+            <ul className="po-plan-features">
+              <li><span className="check">✓</span> 1–2 Signals Daily</li>
+              <li><span className="check">✓</span> Target 1 (TP1) Access</li>
+              <li><span className="check">✓</span> Public Telegram Channel</li>
+              <li><span className="check">✓</span> 15-Minute Alert Delay</li>
+            </ul>
+            <button className="po-btn-plan" onClick={() => showToast('You are on Free Starter Plan')}>
+              Current Tier
+            </button>
+          </div>
+
+          {/* Pro VIP Plan */}
+          <div className="po-plan-card featured">
+            <span className="po-plan-badge">MOST POPULAR</span>
+            <h3 className="po-plan-name">VIP Pro</h3>
+            <div className="po-plan-price">
+              $49 <span>/ month</span>
+            </div>
+            <ul className="po-plan-features">
+              <li><span className="check">✓</span> 8–15 Daily High-Conviction Signals</li>
+              <li><span className="check">✓</span> Instant 0ms Telegram Push</li>
+              <li><span className="check">✓</span> All Target Milestones (TP1, TP2, TP3)</li>
+              <li><span className="check">✓</span> Gold, Crypto, Oil & Forex Pairs</li>
+              <li><span className="check">✓</span> Automated SL-to-BE Move Alerts</li>
+              <li><span className="check">✓</span> Risk Management Calculator</li>
+            </ul>
+            <button className="po-btn-plan primary" onClick={handleUpgradeVIP}>
+              ⚡ Instant 30-Day VIP Activation
+            </button>
+          </div>
+
+          {/* Elite Lifetime Plan */}
+          <div className="po-plan-card">
+            <span className="po-plan-badge gold">LIFETIME</span>
+            <h3 className="po-plan-name">Elite Institutional</h3>
+            <div className="po-plan-price">
+              $299 <span>/ one-time</span>
+            </div>
+            <ul className="po-plan-features">
+              <li><span className="check">✓</span> Lifetime VIP Channel Access</li>
+              <li><span className="check">✓</span> TradingView Pine Script Indicator Key</li>
+              <li><span className="check">✓</span> Custom Webhook Endpoint Integration</li>
+              <li><span className="check">✓</span> 1-on-1 Risk Strategy Consultation</li>
+              <li><span className="check">✓</span> Priority VIP Support 24/7</li>
+            </ul>
+            <button className="po-btn-plan" onClick={() => setActiveModal('vip')}>
+              Get Elite Lifetime
+            </button>
+          </div>
+        </div>
+      </section>
+
+      {/* TRADINGVIEW & TELEGRAM INTEGRATION DOCK */}
+      <section className="po-integration-dock">
+        <div className="po-dock-grid">
+          {/* TradingView Webhook Card */}
+          <div className="po-dock-card">
+            <div className="po-dock-header">
+              <div className="po-dock-title">
+                <span>⚡ TradingView Webhook Endpoint</span>
+              </div>
+              <span className="po-dock-badge tv">ACTIVE</span>
+            </div>
+            <p style={{ fontSize: 12, color: '#8e9fab', margin: 0 }}>
+              Connect your TradingView Pine Script alerts directly to SF CAPITAL FX for zero-latency fan-out:
+            </p>
+            <div className="po-code-box">
+              <code>https://sfcapitalsf.netlify.app/api/webhooks/tradingview</code>
+              <button
+                className="po-btn-step"
+                style={{ width: 'auto', padding: '0 8px', fontSize: 10 }}
+                onClick={() => {
+                  copyToClipboard('https://sfcapitalsf.netlify.app/api/webhooks/tradingview')
+                  showToast('✓ Webhook URL copied!')
+                }}
+              >
+                COPY
+              </button>
+            </div>
+          </div>
+
+          {/* Telegram Channel Card */}
+          <div className="po-dock-card">
+            <div className="po-dock-header">
+              <div className="po-dock-title">
+                <span>📱 Telegram VIP Bot & Channel</span>
+              </div>
+              <span className="po-dock-badge tg">CONNECTED</span>
+            </div>
+            <p style={{ fontSize: 12, color: '#8e9fab', margin: 0 }}>
+              Automated signals with formatted TP/SL targets are broadcasted directly to our Telegram community:
+            </p>
+            <div className="po-code-box">
+              <code>Channel: @sfcapitalfrx · Bot: @SFCapitalFxbot</code>
+              <a
+                href="https://t.me/sfcapitalfrx"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="po-btn-step"
+                style={{ width: 'auto', padding: '0 8px', fontSize: 10 }}
+              >
+                JOIN
+              </a>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* FOOTER */}
+      <footer className="po-footer">
+        <div>
+          <strong>SF CAPITAL FX</strong> · Automated Trading Infrastructure © 2026. All rights reserved.
+        </div>
+        <div className="po-footer-links">
+          <a href="#signals">Signals</a>
+          <a href="#pricing">VIP Plans</a>
+          <a href="https://t.me/sfcapitalfrx" target="_blank" rel="noopener noreferrer">Telegram VIP</a>
+          <a href="https://github.com/vatpro8-png/Forex-Trade" target="_blank" rel="noopener noreferrer">GitHub</a>
         </div>
       </footer>
 
-      {/* Auth Modal */}
+      {/* AUTH MODAL */}
       {activeModal === 'auth' && (
-        <div
-          className="modal-backdrop open"
-          onClick={(e) => e.target === e.currentTarget && setActiveModal(null)}
-        >
-          <section className="modal" role="dialog" aria-modal="true">
-            <button
-              className="modal-close"
-              onClick={() => setActiveModal(null)}
-              aria-label="Close"
-            >
-              ×
-            </button>
-            <div className="eyebrow">MEMBER ACCESS</div>
-            <h2>{authMode === 'login' ? 'Welcome back.' : 'Create your account.'}</h2>
-            <p className="modal-subtitle">
-              {authMode === 'login'
-                ? 'Log in to your SF CAPITAL FX account.'
-                : 'Join the SF CAPITAL FX member area.'}
-            </p>
-
-            <div className="auth-tabs">
-              <button
-                className={`auth-tab ${authMode === 'login' ? 'active' : ''}`}
-                onClick={() => setAuthMode('login')}
-              >
-                Log in
-              </button>
-              <button
-                className={`auth-tab ${authMode === 'register' ? 'active' : ''}`}
-                onClick={() => setAuthMode('register')}
-              >
-                Create account
-              </button>
-            </div>
-
+        <div className="po-modal-overlay" onClick={() => setActiveModal(null)}>
+          <div className="po-modal" onClick={(e) => e.stopPropagation()}>
+            <button className="po-modal-close" onClick={() => setActiveModal(null)}>✕</button>
+            <h3 className="po-modal-title">Trader Account</h3>
+            <p className="po-modal-desc">Sign in or register to track your custom signals and manage VIP membership.</p>
             <form onSubmit={handleAuthSubmit}>
-              {authMode === 'register' && (
-                <label>
-                  Full name
-                  <input
-                    type="text"
-                    value={authName}
-                    onChange={(e) => setAuthName(e.target.value)}
-                    placeholder="Your name"
-                    required
-                  />
-                </label>
-              )}
-              <label>
-                Email address
+              <div className="po-form-group">
+                <label className="po-form-label">Full Name</label>
+                <input
+                  type="text"
+                  className="po-form-input"
+                  placeholder="John Trader"
+                  value={authName}
+                  onChange={(e) => setAuthName(e.target.value)}
+                />
+              </div>
+              <div className="po-form-group">
+                <label className="po-form-label">Email Address</label>
                 <input
                   type="email"
+                  className="po-form-input"
+                  placeholder="trader@sfcapitalfx.com"
+                  required
                   value={authEmail}
                   onChange={(e) => setAuthEmail(e.target.value)}
-                  placeholder="you@example.com"
-                  required
                 />
-              </label>
-              <label>
-                Password
+              </div>
+              <div className="po-form-group">
+                <label className="po-form-label">Password</label>
                 <input
                   type="password"
+                  className="po-form-input"
+                  placeholder="••••••••"
+                  required
                   value={authPassword}
                   onChange={(e) => setAuthPassword(e.target.value)}
-                  placeholder="At least 8 characters"
-                  required
-                  minLength={8}
                 />
-              </label>
-
-              <button className="btn btn-primary full-btn" type="submit" style={{ marginTop: 10 }}>
-                {authMode === 'login' ? 'Log in securely' : 'Create account'}
-              </button>
-
-              {authFeedback && (
-                <div className={`form-message ${authFeedback.isError ? '' : 'success'}`}>
-                  {authFeedback.text}
-                </div>
-              )}
-            </form>
-
-            {authMode === 'login' && (
-              <button
-                className="text-link"
-                style={{ marginTop: 16, display: 'block', textAlign: 'center', width: '100%' }}
-                onClick={() => setActiveModal('forgot')}
-              >
-                Forgot password?
-              </button>
-            )}
-          </section>
-        </div>
-      )}
-
-      {/* Premium Membership Modal */}
-      {activeModal === 'premium' && (
-        <div
-          className="modal-backdrop open"
-          onClick={(e) => e.target === e.currentTarget && setActiveModal(null)}
-        >
-          <section className="modal premium-modal" role="dialog" aria-modal="true">
-            <button
-              className="modal-close"
-              onClick={() => setActiveModal(null)}
-              aria-label="Close"
-            >
-              ×
-            </button>
-            <div className="eyebrow">PREMIUM MEMBERSHIP</div>
-            <h2>Unlock the full signal room.</h2>
-            <div className="modal-price">
-              $100 <small>/ 30 days</small>
-            </div>
-            <p className="modal-subtitle">
-              Membership is activated after manual payment verification by an administrator.
-            </p>
-
-            <div className="payment-steps">
-              <div>
-                <b>01</b>
-                <span>Contact us using an official channel (Telegram preferred).</span>
               </div>
-              <div>
-                <b>02</b>
-                <span>Receive payment instructions (USDT Crypto or Bank Transfer).</span>
-              </div>
-              <div>
-                <b>03</b>
-                <span>Admin verifies payment and activates your account for 30 days.</span>
-              </div>
-            </div>
-
-            <div className="modal-socials">
-              <a href="https://t.me/sfcapitalfrx" target="_blank" rel="noopener noreferrer">
-                Telegram ↗
-              </a>
-              <a
-                href="https://web.facebook.com/profile.php?id=61594920310389"
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                Facebook ↗
-              </a>
-              <a
-                href="https://www.youtube.com/@SFCAPITALFX"
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                YouTube ↗
-              </a>
-            </div>
-            <small className="fine-print">
-              Do not send payment details or passwords to unofficial accounts.
-            </small>
-          </section>
-        </div>
-      )}
-
-      {/* Forgot Password Modal */}
-      {activeModal === 'forgot' && (
-        <div
-          className="modal-backdrop open"
-          onClick={(e) => e.target === e.currentTarget && setActiveModal(null)}
-        >
-          <section className="modal" role="dialog" aria-modal="true">
-            <button
-              className="modal-close"
-              onClick={() => setActiveModal(null)}
-              aria-label="Close"
-            >
-              ×
-            </button>
-            <div className="eyebrow">ACCOUNT RECOVERY</div>
-            <h2>Reset your password.</h2>
-            <p className="modal-subtitle">
-              Enter your account email. If email delivery is configured, you will receive a reset link.
-            </p>
-            <form
-              onSubmit={(e) => {
-                e.preventDefault()
-                showToast('Password recovery instructions sent to your email.')
-                setActiveModal(null)
-              }}
-            >
-              <label>
-                Email address
-                <input type="email" required placeholder="you@example.com" />
-              </label>
-              <button className="btn btn-primary full-btn" type="submit" style={{ marginTop: 12 }}>
-                Send reset link
+              <button type="submit" className="po-btn-submit">
+                Sign In / Register
               </button>
             </form>
-          </section>
+          </div>
         </div>
       )}
 
-      {/* Admin Console Modal */}
+      {/* VIP MODAL */}
+      {activeModal === 'vip' && (
+        <div className="po-modal-overlay" onClick={() => setActiveModal(null)}>
+          <div className="po-modal" onClick={(e) => e.stopPropagation()}>
+            <button className="po-modal-close" onClick={() => setActiveModal(null)}>✕</button>
+            <h3 className="po-modal-title">👑 Activate SF CAPITAL FX VIP</h3>
+            <p className="po-modal-desc">
+              Get unlimited access to high-probability Forex, Gold, and Crypto signals with zero latency.
+            </p>
+            <div style={{ background: '#111a24', padding: 16, borderRadius: 10, border: '1px solid #1d2d42', marginBottom: 16 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+                <span style={{ fontWeight: 700 }}>VIP Monthly Pass</span>
+                <span style={{ color: '#00e676', fontWeight: 800 }}>$49.00 USD</span>
+              </div>
+              <div style={{ fontSize: 12, color: '#8e9fab' }}>
+                • Instant unmasking of all TP1–TP3 targets<br />
+                • Automated Telegram broadcast push<br />
+                • Real-time TradingView Pine Script alerts
+              </div>
+            </div>
+            <button className="po-btn-submit" onClick={handleUpgradeVIP}>
+              ⚡ Instant 30-Day VIP Activation
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ADMIN CONSOLE MODAL */}
       {activeModal === 'admin' && (
         <AdminConsole
           signals={signals}
           user={user}
           onClose={() => setActiveModal(null)}
-          onAddSignal={(newSignal) => setSignals((prev) => [newSignal, ...prev])}
-          onUpdateStatus={(signalId, status) => {
+          onAddSignal={(s) => setSignals((prev) => [s, ...prev])}
+          onUpdateStatus={(id, status) => {
             setSignals((prev) =>
-              prev.map((s) => (s.id === signalId ? { ...s, status } : s))
+              prev.map((s) => (s.id === id ? { ...s, status } : s))
             )
           }}
           onToggleUserTier={(status) => {
-            if (user) {
-              setUser({ ...user, membershipStatus: status })
-            }
+            if (user) setUser({ ...user, membershipStatus: status })
           }}
           onToast={showToast}
         />

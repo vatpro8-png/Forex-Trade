@@ -1,16 +1,26 @@
-import React, { useEffect, useRef } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { createChart, ColorType, IChartApi, ISeriesApi } from 'lightweight-charts'
 import type { Signal, MarketInfo } from '../model/types'
 
 interface TradingChartProps {
   market: MarketInfo
   signal?: Signal | null
+  currentPrice?: number
+  onPriceChange?: (price: number) => void
 }
 
-export const TradingChart: React.FC<TradingChartProps> = ({ market, signal }) => {
+export const TradingChart: React.FC<TradingChartProps> = ({
+  market,
+  signal,
+  currentPrice: externalPrice,
+  onPriceChange,
+}) => {
   const chartContainerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
   const candlestickSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
+  const [selectedTimeframe, setSelectedTimeframe] = useState<'1M' | '5M' | '15M' | '1H' | '1D'>('15M')
+  const [livePrice, setLivePrice] = useState<number>(externalPrice || market.price)
+  const [priceDirection, setPriceDirection] = useState<'UP' | 'DOWN'>('UP')
 
   useEffect(() => {
     if (!chartContainerRef.current) return
@@ -18,35 +28,36 @@ export const TradingChart: React.FC<TradingChartProps> = ({ market, signal }) =>
     const container = chartContainerRef.current
     const chart = createChart(container, {
       layout: {
-        background: { type: ColorType.Solid, color: '#09182b' },
-        textColor: '#8496a7',
-        fontFamily: "'DM Sans', sans-serif",
+        background: { type: ColorType.Solid, color: '#0b1118' },
+        textColor: '#7e93a8',
+        fontFamily: "'Inter', sans-serif",
       },
       grid: {
-        vertLines: { color: 'rgba(255, 255, 255, 0.04)' },
-        horzLines: { color: 'rgba(255, 255, 255, 0.04)' },
+        vertLines: { color: 'rgba(255, 255, 255, 0.03)' },
+        horzLines: { color: 'rgba(255, 255, 255, 0.03)' },
       },
       crosshair: {
-        vertLine: { color: '#c38d35', width: 1, style: 3 },
-        horzLine: { color: '#c38d35', width: 1, style: 3 },
+        vertLine: { color: '#00d4ff', width: 1, style: 3 },
+        horzLine: { color: '#00d4ff', width: 1, style: 3 },
       },
       timeScale: {
-        borderColor: 'rgba(255, 255, 255, 0.08)',
+        borderColor: '#1d2d42',
         timeVisible: true,
         secondsVisible: false,
       },
       rightPriceScale: {
-        borderColor: 'rgba(255, 255, 255, 0.08)',
+        borderColor: '#1d2d42',
       },
-      height: 380,
+      height: 480,
     })
 
+    // Pocket Option Vibrant Candle Colors: Neon Green (#00e676) & Neon Red (#ff3358)
     const candlestickSeries = chart.addCandlestickSeries({
-      upColor: '#11a879',
-      downColor: '#d9534f',
+      upColor: '#00e676',
+      downColor: '#ff3358',
       borderVisible: false,
-      wickUpColor: '#11a879',
-      wickDownColor: '#d9534f',
+      wickUpColor: '#00e676',
+      wickDownColor: '#ff3358',
       priceFormat: {
         type: 'price',
         precision: market.digits,
@@ -57,21 +68,21 @@ export const TradingChart: React.FC<TradingChartProps> = ({ market, signal }) =>
     chartRef.current = chart
     candlestickSeriesRef.current = candlestickSeries
 
-    // Generate realistic base candles around current market price
+    // Generate realistic historical candle data
     const basePrice = market.price
-    const count = 75
+    const count = 80
     const nowSec = Math.floor(Date.now() / 1000)
-    const intervalSec = 900 // 15m
-    let currentOpen = basePrice * 0.985
-    const data = []
+    const intervalSec = selectedTimeframe === '1M' ? 60 : selectedTimeframe === '5M' ? 300 : selectedTimeframe === '15M' ? 900 : selectedTimeframe === '1H' ? 3600 : 86400
+    let currentOpen = basePrice * 0.988
+    const data: Array<{ time: any; open: number; high: number; low: number; close: number }> = []
 
     for (let i = count; i >= 0; i--) {
       const time = (nowSec - i * intervalSec) as any
-      const volatility = basePrice * 0.002
-      const delta = (Math.random() - 0.48) * volatility
+      const volatility = basePrice * 0.0018
+      const delta = (Math.random() - 0.485) * volatility
       const close = currentOpen + delta
-      const high = Math.max(currentOpen, close) + Math.random() * volatility * 0.6
-      const low = Math.min(currentOpen, close) - Math.random() * volatility * 0.6
+      const high = Math.max(currentOpen, close) + Math.random() * volatility * 0.7
+      const low = Math.min(currentOpen, close) - Math.random() * volatility * 0.7
 
       data.push({
         time,
@@ -85,22 +96,22 @@ export const TradingChart: React.FC<TradingChartProps> = ({ market, signal }) =>
 
     candlestickSeries.setData(data)
 
-    // Add price lines for active signal if available
+    // Add high-visibility TradingView price levels (Entry, SL, TP1-3)
     if (signal) {
       if (signal.entry) {
         candlestickSeries.createPriceLine({
           price: signal.entry,
-          color: '#ffffff',
+          color: '#00d4ff',
           lineWidth: 2,
           lineStyle: 2, // Dashed
           axisLabelVisible: true,
-          title: `ENTRY (${signal.direction})`,
+          title: `ENTRY [${signal.direction}]`,
         })
       }
       if (signal.sl) {
         candlestickSeries.createPriceLine({
           price: signal.sl,
-          color: '#d9534f',
+          color: '#ff3358',
           lineWidth: 2,
           lineStyle: 0, // Solid
           axisLabelVisible: true,
@@ -110,7 +121,7 @@ export const TradingChart: React.FC<TradingChartProps> = ({ market, signal }) =>
       if (signal.tp1) {
         candlestickSeries.createPriceLine({
           price: signal.tp1,
-          color: '#11a879',
+          color: '#00e676',
           lineWidth: 1,
           lineStyle: 1, // Dotted
           axisLabelVisible: true,
@@ -120,7 +131,7 @@ export const TradingChart: React.FC<TradingChartProps> = ({ market, signal }) =>
       if (signal.tp2) {
         candlestickSeries.createPriceLine({
           price: signal.tp2,
-          color: '#18c58d',
+          color: '#00e676',
           lineWidth: 1,
           lineStyle: 1,
           axisLabelVisible: true,
@@ -130,7 +141,7 @@ export const TradingChart: React.FC<TradingChartProps> = ({ market, signal }) =>
       if (signal.tp3) {
         candlestickSeries.createPriceLine({
           price: signal.tp3,
-          color: '#22c18b',
+          color: '#ffd700',
           lineWidth: 2,
           lineStyle: 0,
           axisLabelVisible: true,
@@ -141,6 +152,23 @@ export const TradingChart: React.FC<TradingChartProps> = ({ market, signal }) =>
 
     chart.timeScale().fitContent()
 
+    // Live tick pulsation simulating live Pocket Option streaming price updates
+    const lastCandle = { ...data[data.length - 1] }
+    const tickInterval = setInterval(() => {
+      if (!candlestickSeriesRef.current) return
+      const tickDelta = (Math.random() - 0.49) * (market.price * 0.00035)
+      const nextClose = Number((lastCandle.close + tickDelta).toFixed(market.digits))
+      const isUp = nextClose >= lastCandle.close
+      lastCandle.close = nextClose
+      lastCandle.high = Math.max(lastCandle.high, nextClose)
+      lastCandle.low = Math.min(lastCandle.low, nextClose)
+      candlestickSeriesRef.current.update(lastCandle)
+
+      setLivePrice(nextClose)
+      setPriceDirection(isUp ? 'UP' : 'DOWN')
+      if (onPriceChange) onPriceChange(nextClose)
+    }, 1200)
+
     const handleResize = () => {
       if (chartContainerRef.current) {
         chart.applyOptions({ width: chartContainerRef.current.clientWidth })
@@ -150,38 +178,73 @@ export const TradingChart: React.FC<TradingChartProps> = ({ market, signal }) =>
     window.addEventListener('resize', handleResize)
 
     return () => {
+      clearInterval(tickInterval)
       window.removeEventListener('resize', handleResize)
       chart.remove()
     }
-  }, [market.symbol, signal?.id, market.price, market.digits])
+  }, [market.symbol, signal?.id, market.price, market.digits, selectedTimeframe])
 
   return (
-    <div className="trading-chart-wrapper">
-      <div className="chart-controls-bar">
-        <div className="chart-symbol-badge">
-          <span className={`asset-icon-mini ${market.iconClass}`}>{market.iconText}</span>
-          <strong>{market.symbol}</strong>
-          <span>{market.name}</span>
-          <span className="live-dot" style={{ marginLeft: 6 }}></span>
+    <div className="po-chart-terminal">
+      {/* Top Chart Toolbar */}
+      <div className="po-chart-toolbar">
+        <div className="po-market-title">
+          <span className={`po-asset-badge ${market.iconClass}`}>{market.iconText}</span>
+          <div className="po-asset-info">
+            <span className="po-asset-name">{market.symbol}</span>
+            <span className="po-asset-payout">Payout: 94%</span>
+          </div>
+          <div className={`po-live-price-pill ${priceDirection === 'UP' ? 'bull' : 'bear'}`}>
+            <span className="po-pulse-dot"></span>
+            <span className="po-price-val">{livePrice.toFixed(market.digits)}</span>
+            <span className="po-price-arrow">{priceDirection === 'UP' ? '▲' : '▼'}</span>
+          </div>
         </div>
-        <div className="chart-levels-legend">
-          {signal && (
-            <>
-              <span className="legend-tag entry">Entry: {signal.entry}</span>
-              <span className="legend-tag sl">SL: {signal.sl}</span>
-              <span className="legend-tag tp">TP1: {signal.tp1}</span>
-              <span className="legend-tag tp">TP2: {signal.tp2}</span>
-              <span className="legend-tag tp">TP3: {signal.tp3}</span>
-            </>
-          )}
+
+        {/* Timeframe Selector */}
+        <div className="po-tf-switcher">
+          {(['1M', '5M', '15M', '1H', '1D'] as const).map((tf) => (
+            <button
+              key={tf}
+              className={`po-tf-btn ${selectedTimeframe === tf ? 'active' : ''}`}
+              onClick={() => setSelectedTimeframe(tf)}
+            >
+              {tf}
+            </button>
+          ))}
         </div>
+
+        {/* TradingView Signal Tag Overlays */}
+        {signal && (
+          <div className="po-signal-tags">
+            <span className={`po-tag-action ${signal.direction === 'BUY' ? 'buy' : 'sell'}`}>
+              {signal.direction} @ {signal.entry}
+            </span>
+            <span className="po-tag-target sl">SL: {signal.sl}</span>
+            <span className="po-tag-target tp">TP1: {signal.tp1}</span>
+            <span className="po-tag-target tp">TP2: {signal.tp2}</span>
+            <span className="po-tag-target gold">TP3: {signal.tp3}</span>
+          </div>
+        )}
       </div>
-      <div ref={chartContainerRef} className="chart-canvas-container" />
-      <div className="chart-subtext">
-        <span>Interactive Candlestick Chart · Lightweight Charts™</span>
-        <span>Levels automatically synced from TradingView webhook</span>
+
+      {/* Chart Canvas */}
+      <div ref={chartContainerRef} className="po-chart-canvas" />
+
+      {/* Chart Status Bar */}
+      <div className="po-chart-statusbar">
+        <div className="po-feed-status">
+          <span className="po-status-dot online"></span>
+          <span>Feed: Real-time TradingView Webhook Engine</span>
+        </div>
+        <div className="po-spread-info">
+          <span>Spread: 0.1 pips</span>
+          <span>·</span>
+          <span>Leverage: 1:500</span>
+          <span>·</span>
+          <span>Execution: Market (Ultra-fast)</span>
+        </div>
       </div>
     </div>
   )
 }
-
