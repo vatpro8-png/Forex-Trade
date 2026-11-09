@@ -1,0 +1,76 @@
+//@version=5
+indicator("SF CAPITAL FX — Structured Signals Engine", overlay=true, precision=2)
+
+// ==============================================================================
+// SF CAPITAL FX — Pine Script v5 Strategy & Alert Generator
+// Pairs: XAUUSD, BTCUSD, USOIL, and Major Forex Pairs
+// Target: https://sfcapitalsf.netlify.app/api/webhooks/tradingview
+// ==============================================================================
+
+// --- User Inputs ---
+var string G_SECRET = "Security & Webhook Settings"
+webhookSecret = input.string("sf-capital-fx-production-secret-2026-key", "Webhook Secret Key", group=G_SECRET)
+
+var string G_STRAT = "Strategy Parameters"
+emaFastLength = input.int(20, "Fast EMA Length", minval=1, group=G_STRAT)
+emaSlowLength = input.int(50, "Slow EMA Length", minval=1, group=G_STRAT)
+atrPeriod     = input.int(14, "ATR Period for SL/TP", minval=1, group=G_STRAT)
+atrMultiplier = input.float(1.5, "ATR SL Multiplier", minval=0.5, step=0.1, group=G_STRAT)
+tp1Multiplier = input.float(1.0, "TP1 Reward:Risk Ratio", minval=0.5, step=0.1, group=G_STRAT)
+tp2Multiplier = input.float(2.0, "TP2 Reward:Risk Ratio", minval=1.0, step=0.1, group=G_STRAT)
+tp3Multiplier = input.float(3.5, "TP3 Runner Ratio", minval=1.5, step=0.1, group=G_STRAT)
+
+// --- Indicator Calculations ---
+emaFast = ta.ema(close, emaFastLength)
+emaSlow = ta.ema(close, emaSlowLength)
+atrValue = ta.atr(atrPeriod)
+
+// Filter: Momentum Confluence
+rsi = ta.rsi(close, 14)
+bullishConfluence = ta.crossover(emaFast, emaSlow) and rsi > 50
+bearishConfluence = ta.crossunder(emaFast, emaSlow) and rsi < 50
+
+// Track active signal levels
+var float entryPrice = na
+var float stopLossPrice = na
+var float tp1Price = na
+var float tp2Price = na
+var float tp3Price = na
+var string activeDirection = ""
+
+// Signal Triggers
+buySignal = bullishConfluence and (na(activeDirection) or activeDirection != "BUY")
+sellSignal = bearishConfluence and (na(activeDirection) or activeDirection != "SELL")
+
+if buySignal
+    entryPrice := close
+    stopLossPrice := close - (atrValue * atrMultiplier)
+    float risk = entryPrice - stopLossPrice
+    tp1Price := entryPrice + (risk * tp1Multiplier)
+    tp2Price := entryPrice + (risk * tp2Multiplier)
+    tp3Price := entryPrice + (risk * tp3Multiplier)
+    activeDirection := "BUY"
+
+if sellSignal
+    entryPrice := close
+    stopLossPrice := close + (atrValue * atrMultiplier)
+    float risk = stopLossPrice - entryPrice
+    tp1Price := entryPrice - (risk * tp1Multiplier)
+    tp2Price := entryPrice - (risk * tp2Multiplier)
+    tp3Price := entryPrice - (risk * tp3Multiplier)
+    activeDirection := "SELL"
+
+// --- Visual Plotting ---
+plot(emaFast, "Fast EMA (20)", color=color.new(#18c58d, 0), linewidth=2)
+plot(emaSlow, "Slow EMA (50)", color=color.new(#c38d35, 0), linewidth=2)
+
+plotshape(buySignal, title="BUY Alert", location=location.belowbar, color=#11a879, style=shape.triangleup, size=size.small, text="SF BUY")
+plotshape(sellSignal, title="SELL Alert", location=location.abovebar, color=#d9534f, style=shape.triangledown, size=size.small, text="SF SELL")
+
+// --- Alert Payload Strings ---
+buyAlertJson = '{"secret":"' + webhookSecret + '","pair":"' + syminfo.ticker + '","signal":"BUY","timeframe":"' + timeframe.period + '","entry":' + str.tostring(entryPrice, "#.##") + ',"sl":' + str.tostring(stopLossPrice, "#.##") + ',"tp1":' + str.tostring(tp1Price, "#.##") + ',"tp2":' + str.tostring(tp2Price, "#.##") + ',"tp3":' + str.tostring(tp3Price, "#.##") + ',"time":"' + str.format_time(time, "yyyy-MM-dd'T'HH:mm:ss'Z'") + '"}'
+sellAlertJson = '{"secret":"' + webhookSecret + '","pair":"' + syminfo.ticker + '","signal":"SELL","timeframe":"' + timeframe.period + '","entry":' + str.tostring(entryPrice, "#.##") + ',"sl":' + str.tostring(stopLossPrice, "#.##") + ',"tp1":' + str.tostring(tp1Price, "#.##") + ',"tp2":' + str.tostring(tp2Price, "#.##") + ',"tp3":' + str.tostring(tp3Price, "#.##") + ',"time":"' + str.format_time(time, "yyyy-MM-dd'T'HH:mm:ss'Z'") + '"}'
+
+// Register TradingView Alert conditions
+alertcondition(buySignal, title="SF CAPITAL BUY Alert", message=buyAlertJson)
+alertcondition(sellSignal, title="SF CAPITAL SELL Alert", message=sellAlertJson)
