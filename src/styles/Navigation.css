@@ -1,0 +1,59 @@
+/* Navigation Component Styles */
+
+.navigation {
+  background-color: #2a2a2a;
+  border-bottom: 1px solid #404040;
+  position: sticky;
+  top: 80px;
+  z-index: 99;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.nav-list {
+  display: flex;
+  list-style: none;
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 0 20px;
+}
+
+.nav-link {
+  display: block;
+  padding: 16px 20px;
+  color: #e0e0e0;
+  text-decoration: none;
+  font-weight: 600;
+  font-size: 14px;
+  transition: all 0.3s;
+  border-bottom: 3px solid transparent;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.nav-link:hover {
+  color: #d4af37;
+  border-bottom-color: #d4af37;
+  background-color: rgba(212, 175, 55, 0.05);
+}
+
+.nav-link.admin {
+  color: #ffc107;
+}
+
+.nav-link.admin:hover {
+  color: #ffd54f;
+  border-bottom-color: #ffc107;
+  background-color: rgba(255, 193, 7, 0.05);
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .nav-list {
+    flex-wrap: wrap;
+  }
+
+  .nav-link {
+    padding: 12px 14px;
+    font-size: 12px;
+  }
+}

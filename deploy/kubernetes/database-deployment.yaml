@@ -1,0 +1,128 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: sfc-postgres
+  namespace: sfc-capital-fx
+spec:
+  serviceName: sfc-postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sfc-postgres
+  template:
+    metadata:
+      labels:
+        app: sfc-postgres
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:15-alpine
+        ports:
+        - containerPort: 5432
+          name: postgres
+        env:
+        - name: POSTGRES_DB
+          value: "sfc_capital_fx"
+        - name: POSTGRES_USER
+          value: "sfc_user"
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: sfc-secrets
+              key: db_password
+        volumeMounts:
+        - name: postgres-storage
+          mountPath: /var/lib/postgresql/data
+          subPath: postgres
+        resources:
+          requests:
+            cpu: 1000m
+            memory: 2Gi
+          limits:
+            cpu: 4000m
+            memory: 8Gi
+        livenessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - pg_isready -U sfc_user -d sfc_capital_fx
+          initialDelaySeconds: 30
+          periodSeconds: 10
+  volumeClaimTemplates:
+  - metadata:
+      name: postgres-storage
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 50Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sfc-postgres
+  namespace: sfc-capital-fx
+spec:
+  clusterIP: None
+  selector:
+    app: sfc-postgres
+  ports:
+  - port: 5432
+    targetPort: 5432
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sfc-redis
+  namespace: sfc-capital-fx
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sfc-redis
+  template:
+    metadata:
+      labels:
+        app: sfc-redis
+    spec:
+      containers:
+      - name: redis
+        image: redis:7-alpine
+        ports:
+        - containerPort: 6379
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 1Gi
+        volumeMounts:
+        - name: redis-storage
+          mountPath: /data
+        livenessProbe:
+          exec:
+            command:
+            - redis-cli
+            - ping
+          initialDelaySeconds: 10
+          periodSeconds: 5
+      volumes:
+      - name: redis-storage
+        emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sfc-redis
+  namespace: sfc-capital-fx
+spec:
+  selector:
+    app: sfc-redis
+  ports:
+  - port: 6379
+    targetPort: 6379

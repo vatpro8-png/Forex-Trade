@@ -1,0 +1,94 @@
+version: "3.8"
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: sfc_postgres
+    environment:
+      POSTGRES_DB: sfc_capital_fx
+      POSTGRES_USER: sfc_user
+      POSTGRES_PASSWORD: change_in_production
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sfc_user -d sfc_capital_fx"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - sfc_network
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: sfc_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - sfc_network
+
+  # Backend API Service (will be built locally)
+  sfc_api:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: sfc_api
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: sfc_capital_fx
+      DB_USER: sfc_user
+      DB_PASSWORD: change_in_production
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      API_PORT: 8443
+      ENVIRONMENT: development
+    ports:
+      - "8443:8443"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app/backend
+      - ./logs:/app/logs
+    networks:
+      - sfc_network
+
+  # Frontend (will be built separately)
+  sfc_frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    container_name: sfc_frontend
+    environment:
+      VITE_API_URL: http://localhost:8443
+      VITE_ENV: development
+    ports:
+      - "5173:5173"
+    depends_on:
+      - sfc_api
+    volumes:
+      - ./src:/app/src
+    networks:
+      - sfc_network
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  sfc_network:
+    driver: bridge

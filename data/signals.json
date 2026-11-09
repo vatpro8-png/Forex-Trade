@@ -1,0 +1,23 @@
+[
+  {
+    "id": "tv-xauusd-177003",
+    "pair": "XAUUSD",
+    "direction": "BUY",
+    "timeframe": "15m",
+    "entry": 2685.5,
+    "sl": 2672,
+    "tp1": 2695,
+    "tp2": 2708,
+    "tp3": 2720,
+    "time": "2026-11-09T21:30:00Z",
+    "status": "ACTIVE",
+    "source": "TradingView",
+    "isPremiumOnly": false,
+    "milestones": [
+      {
+        "milestone": "CREATED",
+        "time": "2026-11-09T15:46:17.004Z"
+      }
+    ]
+  }
+]

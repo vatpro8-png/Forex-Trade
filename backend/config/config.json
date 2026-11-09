@@ -1,0 +1,82 @@
+{
+  "development": {
+    "database": {
+      "host": "localhost",
+      "port": 5432,
+      "name": "sfc_capital_fx_dev",
+      "pool_size": 10
+    },
+    "api": {
+      "host": "0.0.0.0",
+      "port": 8443,
+      "log_level": "debug",
+      "rate_limiter": {
+        "max_requests_per_minute": 100
+      }
+    },
+    "webhook": {
+      "timeout_seconds": 30,
+      "max_payload_size_mb": 1
+    },
+    "telegram": {
+      "retry_attempts": 3,
+      "retry_delay_seconds": 5
+    }
+  },
+  "staging": {
+    "database": {
+      "host": "database.staging.sfcapitalfx.internal",
+      "port": 5432,
+      "name": "sfc_capital_fx_staging",
+      "pool_size": 20,
+      "ssl": true
+    },
+    "api": {
+      "host": "0.0.0.0",
+      "port": 8443,
+      "log_level": "info",
+      "rate_limiter": {
+        "max_requests_per_minute": 500
+      }
+    },
+    "webhook": {
+      "timeout_seconds": 30,
+      "max_payload_size_mb": 1
+    },
+    "telegram": {
+      "retry_attempts": 5,
+      "retry_delay_seconds": 10
+    }
+  },
+  "production": {
+    "database": {
+      "host": "database.production.sfcapitalfx.internal",
+      "port": 5432,
+      "name": "sfc_capital_fx",
+      "pool_size": 50,
+      "ssl": true,
+      "backup_enabled": true
+    },
+    "api": {
+      "host": "0.0.0.0",
+      "port": 8443,
+      "log_level": "warn",
+      "rate_limiter": {
+        "max_requests_per_minute": 1000,
+        "burst_size": 100
+      }
+    },
+    "webhook": {
+      "timeout_seconds": 15,
+      "max_payload_size_mb": 1
+    },
+    "telegram": {
+      "retry_attempts": 10,
+      "retry_delay_seconds": 30
+    },
+    "monitoring": {
+      "enabled": true,
+      "metrics_port": 9090
+    }
+  }
+}
