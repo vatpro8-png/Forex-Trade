@@ -74,3 +74,4 @@ sellAlertJson = '{"secret":"' + webhookSecret + '","pair":"' + syminfo.ticker + 
 // Register TradingView Alert conditions
 alertcondition(buySignal, title="SF CAPITAL BUY Alert", message=buyAlertJson)
 alertcondition(sellSignal, title="SF CAPITAL SELL Alert", message=sellAlertJson)
+

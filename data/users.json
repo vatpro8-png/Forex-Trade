@@ -1,0 +1,24 @@
+[
+  {
+    "id": "usr-admin-01",
+    "email": "admin@sfcapitalfx.com",
+    "name": "SF Capital Admin",
+    "role": "admin",
+    "membershipStatus": "PREMIUM",
+    "premiumExpiresAt": "2027-11-09T16:08:43.491Z",
+    "salt": "772fd018f946013a1efe937ae87c0274",
+    "passwordHash": "421fa53d2e8dab40be1353c75c6811cd90fa96b25ef5c6780ee28af35946bc870057384d7743bd80da5780ac6bf49c0c29d00a87d342764bf6aab8faa7ee02b8",
+    "createdAt": "2026-11-09T16:08:43.491Z"
+  },
+  {
+    "id": "usr-1794240563687-qehn",
+    "email": "trader_1794240563638@example.com",
+    "name": "Alex Trader",
+    "role": "member",
+    "membershipStatus": "PREMIUM",
+    "premiumExpiresAt": "2026-12-09T16:09:23.705Z",
+    "salt": "421a20837e857633871771b529aeb9cf",
+    "passwordHash": "b498c56aae2f3ea32fada30788bc09c0217cb5ed04f06ca602976ebefa007cfca8dcd18df8c5c1306ab2b7d5f6d714b35bcefddd1ca9c93d1fa98287f7752ff1",
+    "createdAt": "2026-11-09T16:09:23.687Z"
+  }
+]

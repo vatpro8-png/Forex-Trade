@@ -193,3 +193,4 @@ Configure your TradingView Pine Script alert with:
 - [x] Security headers and Content Security Policy applied.
 - [x] Deploy previews enabled for Pull Requests.
 - [x] Assets hashed and cached with immutable headers.
+

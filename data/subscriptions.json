@@ -1,0 +1,12 @@
+[
+  {
+    "id": "sub-1794240563705",
+    "userId": "usr-1794240563687-qehn",
+    "plan": "premium_30d",
+    "status": "ACTIVE",
+    "activatedBy": "usr-admin-01",
+    "reference": "TEST_MANUAL_RECEIPT_100_USDT",
+    "periodEnd": "2026-12-09T16:09:23.705Z",
+    "createdAt": "2026-11-09T16:09:23.705Z"
+  }
+]

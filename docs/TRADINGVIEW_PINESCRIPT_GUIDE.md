@@ -103,3 +103,4 @@ When the market reaches profit targets, status updates can be triggered automati
 * **TP2 Hit**: Runner partial close ($+215\text{ pips}$).
 * **TP3 Hit**: Final target complete ($+340\text{ pips}$).
 * **SL Hit**: Closed with controlled risk.
+
