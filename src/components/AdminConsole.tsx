@@ -21,6 +21,20 @@ interface TelegramDelivery {
   lastError?: string | null
 }
 
+interface SubscriptionRequest {
+  id: string
+  userId?: string | null
+  email?: string
+  plan: MembershipPlanSlug
+  planName?: string
+  durationDays?: number
+  amountUsd?: number
+  paymentMethod?: string
+  reference: string
+  status: string
+  createdAt: string
+}
+
 const PAID_PLANS = MEMBERSHIP_PLANS.filter((p) => p.isPremium)
 
 export const AdminConsole: React.FC<AdminConsoleProps> = ({
@@ -50,11 +64,28 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
   const [selectedPlan, setSelectedPlan] = useState<MembershipPlanSlug>('premium_30d')
   const [paymentReference, setPaymentReference] = useState('')
   const [isActivating, setIsActivating] = useState(false)
+  const [subRequests, setSubRequests] = useState<SubscriptionRequest[]>([])
 
   // Telegram deliveries state
   const [telegramDeliveries, setTelegramDeliveries] = useState<TelegramDelivery[]>([])
   const [telegramError, setTelegramError] = useState<string | null>(null)
   const [isTelegramLoading, setIsTelegramLoading] = useState(false)
+
+  useEffect(() => {
+    if (tab !== 'members') return
+    const token = localStorage.getItem('sf-session-token')
+    if (!token) return
+    let active = true
+    fetch('/api/admin/subscriptions/requests', { headers: { Authorization: `Bearer ${token}` } })
+      .then(async (res) => (res.ok ? res.json() : []))
+      .then((rows) => {
+        if (active && Array.isArray(rows)) setSubRequests(rows)
+      })
+      .catch(() => null)
+    return () => {
+      active = false
+    }
+  }, [tab])
 
   const activePlan = PAID_PLANS.find((p) => p.slug === selectedPlan) || PAID_PLANS[0]
 
@@ -511,6 +542,38 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
                   : `Activate ${activePlan.name} (${activePlan.durationDays}d · $${activePlan.priceUsd})`}
               </button>
             </form>
+
+            {subRequests.length > 0 && (
+              <div className="po-admin-list" style={{ marginTop: 16 }}>
+                <div className="po-form-label">Verification Queue ({subRequests.length})</div>
+                {subRequests.map((req) => (
+                  <div className="po-admin-row" key={req.id}>
+                    <div className="po-admin-row-info">
+                      <div className="po-admin-row-head">
+                        <strong>{req.email || req.userId || 'Member'}</strong>
+                        <span className={`po-status-pill ${req.status.toLowerCase()}`}>{req.status}</span>
+                      </div>
+                      <div className="po-admin-row-sub">
+                        {req.planName || req.plan} · ${req.amountUsd ?? 100} · {req.paymentMethod || 'MANUAL'} · Ref: {req.reference}
+                      </div>
+                    </div>
+                    {req.status === 'PENDING_VERIFICATION' && req.email && (
+                      <button
+                        type="button"
+                        className="po-admin-action-btn tp"
+                        onClick={() => {
+                          setTargetEmail(req.email || '')
+                          setSelectedPlan(req.plan)
+                          setPaymentReference(req.reference)
+                        }}
+                      >
+                        Load into Form
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
 

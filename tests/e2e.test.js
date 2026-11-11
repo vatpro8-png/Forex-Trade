@@ -141,6 +141,41 @@ async function runTests() {
     assert(missingRef.status === 400, `Expected status 400 for empty reference, got ${missingRef.status}`)
   })
 
+  await test('POST /api/auth/forgot-password logs reset request safely', async () => {
+    const res = await fetch(`${BASE_URL}/api/auth/forgot-password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'trader@example.com' }),
+    })
+    assert(res.status === 200, `Expected status 200, got ${res.status}`)
+  })
+
+  await test('POST /api/subscriptions/request queues PENDING_VERIFICATION proof', async () => {
+    const reqRef = `TEST_MANUAL_RECEIPT_${Date.now()}`
+    const res = await fetch(`${BASE_URL}/api/subscriptions/request`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${memberToken}`,
+      },
+      body: JSON.stringify({
+        plan: 'premium_30d',
+        paymentMethod: 'USDT_TRC20',
+        reference: reqRef,
+      }),
+    })
+    assert(res.status === 201, `Expected status 201, got ${res.status}`)
+    const data = await res.json()
+    assert(data.subscription.status === 'PENDING_VERIFICATION', 'Status must start as PENDING_VERIFICATION')
+
+    const queueRes = await fetch(`${BASE_URL}/api/admin/subscriptions/requests`, {
+      headers: { Authorization: `Bearer ${adminToken}` },
+    })
+    assert(queueRes.status === 200, `Expected status 200 from admin queue, got ${queueRes.status}`)
+    const queue = await queueRes.json()
+    assert(queue.some((q) => q.reference === reqRef), 'Submitted proof must appear in admin queue')
+  })
+
   await test('POST /api/admin/subscriptions/activate grants 30-Day VIP without leaking secrets', async () => {
     const res = await fetch(`${BASE_URL}/api/admin/subscriptions/activate`, {
       method: 'POST',

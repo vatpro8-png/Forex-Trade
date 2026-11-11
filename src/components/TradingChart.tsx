@@ -10,6 +10,35 @@ interface TradingChartProps {
   onPriceChange?: (price: number) => void
 }
 
+function calculateEmaSeries(
+  candles: Array<{ time: any; close: number }>,
+  period: number,
+  digits: number
+) {
+  if (candles.length === 0) return []
+  const k = 2 / (period + 1)
+  let ema = candles[0].close
+  return candles.map((c, idx) => {
+    ema = idx === 0 ? c.close : c.close * k + ema * (1 - k)
+    return {
+      time: c.time,
+      value: Number(ema.toFixed(digits)),
+    }
+  })
+}
+
+function formatCountdown(intervalSec: number): string {
+  const nowSec = Math.floor(Date.now() / 1000)
+  const remaining = intervalSec - (nowSec % intervalSec)
+  const hours = Math.floor(remaining / 3600)
+  const mins = Math.floor((remaining % 3600) / 60)
+  const secs = remaining % 60
+  if (hours > 0) {
+    return `${String(hours).padStart(2, '0')}:${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`
+  }
+  return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`
+}
+
 export const TradingChart: React.FC<TradingChartProps> = ({
   market,
   signal,
@@ -19,13 +48,36 @@ export const TradingChart: React.FC<TradingChartProps> = ({
   const chartRef = useRef<IChartApi | null>(null)
   const candlestickSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
   const [selectedTimeframe, setSelectedTimeframe] = useState<'1M' | '5M' | '15M' | '1H' | '1D'>('15M')
+  const [showEmaOverlay, setShowEmaOverlay] = useState<boolean>(true)
   const [livePrice, setLivePrice] = useState<number>(market.price)
+  const [ohlc, setOhlc] = useState({ open: market.price, high: market.price, low: market.price, close: market.price })
   const [priceDirection, setPriceDirection] = useState<'UP' | 'DOWN'>('UP')
+  const [barCountdown, setBarCountdown] = useState<string>('15:00')
+
+  const intervalSec =
+    selectedTimeframe === '1M'
+      ? 60
+      : selectedTimeframe === '5M'
+        ? 300
+        : selectedTimeframe === '15M'
+          ? 900
+          : selectedTimeframe === '1H'
+            ? 3600
+            : 86400
 
   useEffect(() => {
     setLivePrice(market.price)
+    setOhlc({ open: market.price, high: market.price, low: market.price, close: market.price })
     if (onPriceChange) onPriceChange(market.price)
   }, [market.symbol, market.price])
+
+  useEffect(() => {
+    setBarCountdown(formatCountdown(intervalSec))
+    const timer = setInterval(() => {
+      setBarCountdown(formatCountdown(intervalSec))
+    }, 1000)
+    return () => clearInterval(timer)
+  }, [intervalSec])
 
   useEffect(() => {
     if (!chartContainerRef.current) return
@@ -53,7 +105,7 @@ export const TradingChart: React.FC<TradingChartProps> = ({
       rightPriceScale: {
         borderColor: '#1d2d42',
       },
-      height: 480,
+      height: 470,
     })
 
     const candlestickSeries = chart.addCandlestickSeries({
@@ -73,18 +125,8 @@ export const TradingChart: React.FC<TradingChartProps> = ({
     candlestickSeriesRef.current = candlestickSeries
 
     const basePrice = market.price
-    const count = 80
+    const count = 85
     const nowSec = Math.floor(Date.now() / 1000)
-    const intervalSec =
-      selectedTimeframe === '1M'
-        ? 60
-        : selectedTimeframe === '5M'
-          ? 300
-          : selectedTimeframe === '15M'
-            ? 900
-            : selectedTimeframe === '1H'
-              ? 3600
-              : 86400
     let currentOpen = basePrice * 0.988
     const data: Array<{ time: any; open: number; high: number; low: number; close: number }> = []
 
@@ -107,6 +149,23 @@ export const TradingChart: React.FC<TradingChartProps> = ({
     }
 
     candlestickSeries.setData(data)
+
+    if (showEmaOverlay) {
+      const emaFastSeries = chart.addLineSeries({
+        color: '#00e676',
+        lineWidth: 2,
+        priceLineVisible: false,
+        lastValueVisible: false,
+      })
+      const emaSlowSeries = chart.addLineSeries({
+        color: '#ffb300',
+        lineWidth: 2,
+        priceLineVisible: false,
+        lastValueVisible: false,
+      })
+      emaFastSeries.setData(calculateEmaSeries(data, 20, market.digits))
+      emaSlowSeries.setData(calculateEmaSeries(data, 50, market.digits))
+    }
 
     if (signal) {
       if (signal.entry !== null && signal.entry !== undefined) {
@@ -164,18 +223,45 @@ export const TradingChart: React.FC<TradingChartProps> = ({
     chart.timeScale().fitContent()
 
     const lastCandle = { ...data[data.length - 1] }
+    setOhlc({
+      open: lastCandle.open,
+      high: lastCandle.high,
+      low: lastCandle.low,
+      close: lastCandle.close,
+    })
+
+    chart.subscribeCrosshairMove((param) => {
+      const point = param.seriesData.get(candlestickSeries) as
+        | { open: number; high: number; low: number; close: number }
+        | undefined
+      if (point) {
+        setOhlc({
+          open: point.open,
+          high: point.high,
+          low: point.low,
+          close: point.close,
+        })
+      }
+    })
+
     const tickInterval = setInterval(() => {
       if (!candlestickSeriesRef.current) return
       const tickDelta = (Math.random() - 0.49) * (market.price * 0.00035)
       const nextClose = Number((lastCandle.close + tickDelta).toFixed(market.digits))
       const isUp = nextClose >= lastCandle.close
       lastCandle.close = nextClose
-      lastCandle.high = Math.max(lastCandle.high, nextClose)
-      lastCandle.low = Math.min(lastCandle.low, nextClose)
+      lastCandle.high = Number(Math.max(lastCandle.high, nextClose).toFixed(market.digits))
+      lastCandle.low = Number(Math.min(lastCandle.low, nextClose).toFixed(market.digits))
       candlestickSeriesRef.current.update(lastCandle)
 
       setLivePrice(nextClose)
       setPriceDirection(isUp ? 'UP' : 'DOWN')
+      setOhlc({
+        open: lastCandle.open,
+        high: lastCandle.high,
+        low: lastCandle.low,
+        close: lastCandle.close,
+      })
       if (onPriceChange) onPriceChange(nextClose)
     }, 1200)
 
@@ -192,7 +278,18 @@ export const TradingChart: React.FC<TradingChartProps> = ({
       window.removeEventListener('resize', handleResize)
       chart.remove()
     }
-  }, [market.symbol, signal?.id, signal?.entry, signal?.tp2, signal?.tp3, market.price, market.digits, selectedTimeframe])
+  }, [
+    market.symbol,
+    signal?.id,
+    signal?.entry,
+    signal?.tp2,
+    signal?.tp3,
+    market.price,
+    market.digits,
+    selectedTimeframe,
+    intervalSec,
+    showEmaOverlay,
+  ])
 
   return (
     <div className="po-chart-terminal" id="terminal-chart">
@@ -210,17 +307,32 @@ export const TradingChart: React.FC<TradingChartProps> = ({
           </div>
         </div>
 
-        <div className="po-tf-switcher">
-          {(['1M', '5M', '15M', '1H', '1D'] as const).map((tf) => (
-            <button
-              key={tf}
-              type="button"
-              className={`po-tf-btn ${selectedTimeframe === tf ? 'active' : ''}`}
-              onClick={() => setSelectedTimeframe(tf)}
-            >
-              {tf}
-            </button>
-          ))}
+        <div className="po-chart-controls-group">
+          <div className="po-tf-switcher">
+            {(['1M', '5M', '15M', '1H', '1D'] as const).map((tf) => (
+              <button
+                key={tf}
+                type="button"
+                className={`po-tf-btn ${selectedTimeframe === tf ? 'active' : ''}`}
+                onClick={() => setSelectedTimeframe(tf)}
+              >
+                {tf}
+              </button>
+            ))}
+          </div>
+
+          <button
+            type="button"
+            className={`po-indicator-toggle ${showEmaOverlay ? 'active' : ''}`}
+            onClick={() => setShowEmaOverlay((v) => !v)}
+            title="Toggle EMA 20 / EMA 50 Confluence Overlay"
+          >
+            <span>EMA 20/50</span>
+          </button>
+
+          <span className="po-bar-timer" title="Time to next bar close">
+            ⏱ {barCountdown}
+          </span>
         </div>
 
         {signal && (
@@ -240,17 +352,40 @@ export const TradingChart: React.FC<TradingChartProps> = ({
         )}
       </div>
 
-      <div ref={chartContainerRef} className="po-chart-canvas" />
+      {/* Floating OHLC & Strategy HUD */}
+      <div className="po-chart-stage">
+        <div className="po-ohlc-hud">
+          <span>
+            O <strong>{ohlc.open.toFixed(market.digits)}</strong>
+          </span>
+          <span>
+            H <strong className="bull">{ohlc.high.toFixed(market.digits)}</strong>
+          </span>
+          <span>
+            L <strong className="bear">{ohlc.low.toFixed(market.digits)}</strong>
+          </span>
+          <span>
+            C <strong>{ohlc.close.toFixed(market.digits)}</strong>
+          </span>
+          {showEmaOverlay && (
+            <span className="po-ema-legend">
+              <i style={{ background: '#00e676' }}></i> EMA20
+              <i style={{ background: '#ffb300', marginLeft: 8 }}></i> EMA50
+            </span>
+          )}
+        </div>
+        <div ref={chartContainerRef} className="po-chart-canvas" />
+      </div>
 
       <div className="po-chart-statusbar">
         <div className="po-feed-status">
           <span className="po-status-dot online"></span>
-          <span>Chart Canvas: Reference price action simulation · Levels from Signal Feed</span>
+          <span>Chart: Reference candles + EMA 20/50 · Signal levels overlaid from TradingView feed</span>
         </div>
         <div className="po-spread-info">
           <span>Precision: {market.digits} decimals</span>
           <span>·</span>
-          <span>Risk Model: Fixed Fractional (Max 2%)</span>
+          <span>Demo Simulation Mode</span>
         </div>
       </div>
     </div>

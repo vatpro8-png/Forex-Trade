@@ -503,10 +503,110 @@ const server = http.createServer((req, res) => {
     return
   }
 
-  // Canonical Membership Plans & Pricing
+  // Canonical Membership Plans & Pricing (Single Source of Truth)
   if (req.method === 'GET' && (url.pathname === '/api/memberships/plans' || url.pathname === '/api/pricing')) {
     res.writeHead(200, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify({ plans: MEMBERSHIP_PLANS }))
+    return
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/auth/forgot-password') {
+    readBody((err, data) => {
+      const email = String(data?.email || '').trim().toLowerCase()
+      if (err || !email.includes('@')) {
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Valid email address is required.' }))
+        return
+      }
+      logAudit('PASSWORD_RESET_REQUESTED', 'user', email, { email })
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(
+        JSON.stringify({
+          success: true,
+          message:
+            'Request logged. If automated SMTP delivery is not configured, contact support on Telegram (@sfcapitalfrx) to verify account recovery.',
+        })
+      )
+    })
+    return
+  }
+
+  // Member submits manual payment verification proof for VIP upgrade
+  if (req.method === 'POST' && url.pathname === '/api/subscriptions/request') {
+    const authUser = getAuthUser(req)
+    readBody((err, data) => {
+      if (err || !data || typeof data !== 'object' || Array.isArray(data)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Invalid JSON payload.' }))
+        return
+      }
+
+      const plan = MEMBERSHIP_PLANS.find((p) => p.isPremium && (p.slug === data.plan || p.id === data.plan))
+      if (!plan) {
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Valid paid membership plan (premium_30d or premium_365d) is required.' }))
+        return
+      }
+
+      const paymentMethod = String(data.paymentMethod || '').trim().toUpperCase()
+      const allowedMethods = ['USDT_TRC20', 'BINANCE_PAY', 'BKASH', 'NAGAD', 'BANK_TRANSFER', 'MANUAL']
+      if (!allowedMethods.includes(paymentMethod)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Unsupported payment verification method.' }))
+        return
+      }
+
+      const reference = String(data.reference || '').trim()
+      if (reference.length < 4 || reference.length > 120) {
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Valid payment transaction reference (4–120 chars) is required.' }))
+        return
+      }
+
+      const contactEmail = String(authUser?.email || data.email || '').trim().toLowerCase()
+      if (!contactEmail.includes('@')) {
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Account email is required to match your payment.' }))
+        return
+      }
+
+      const linkedUser = authUser || users.find((u) => u.email.toLowerCase() === contactEmail) || null
+      const duplicatePending = subscriptions.find(
+        (s) => s.status === 'PENDING_VERIFICATION' && s.reference === reference
+      )
+      if (duplicatePending) {
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ success: true, duplicate: true, subscription: duplicatePending }))
+        return
+      }
+
+      const pendingEntry = {
+        id: `sub-req-${Date.now()}-${Math.random().toString(36).substring(2, 5)}`,
+        userId: linkedUser?.id || null,
+        email: contactEmail,
+        plan: plan.slug,
+        planName: plan.name,
+        durationDays: plan.durationDays,
+        amountCents: plan.priceCents,
+        amountUsd: plan.priceUsd,
+        currency: plan.currency,
+        paymentMethod,
+        reference,
+        status: 'PENDING_VERIFICATION',
+        createdAt: new Date().toISOString(),
+      }
+      subscriptions.unshift(pendingEntry)
+      saveJson(SUBS_FILE, subscriptions)
+      logAudit('PAYMENT_VERIFICATION_SUBMITTED', 'subscription', pendingEntry.id, {
+        email: contactEmail,
+        plan: plan.slug,
+        paymentMethod,
+        reference,
+      }, linkedUser?.id || null)
+
+      res.writeHead(201, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ success: true, duplicate: false, subscription: pendingEntry }))
+    })
     return
   }
 
@@ -780,22 +880,50 @@ const server = http.createServer((req, res) => {
       targetUser.premiumExpiresAt = periodEnd
       saveJson(USERS_FILE, users)
 
-      const subEntry = {
-        id: `sub-${Date.now()}`,
-        userId: targetUser.id,
-        plan: resolvedPlan.slug,
-        planName: resolvedPlan.name,
-        durationDays: rawDays,
-        amountCents: resolvedPlan.priceCents,
-        amountUsd: resolvedPlan.priceUsd,
-        currency: resolvedPlan.currency,
-        status: 'ACTIVE',
-        activatedBy: authUser.id,
-        reference,
-        periodEnd,
-        createdAt: new Date().toISOString(),
+      const existingPending = data.subscriptionId
+        ? subscriptions.find((s) => s.id === data.subscriptionId && s.status === 'PENDING_VERIFICATION')
+        : subscriptions.find(
+            (s) =>
+              s.status === 'PENDING_VERIFICATION' &&
+              (s.reference === reference || s.userId === targetUser.id || s.email === targetUser.email)
+          )
+
+      let subEntry
+      if (existingPending) {
+        existingPending.userId = targetUser.id
+        existingPending.email = targetUser.email
+        existingPending.plan = resolvedPlan.slug
+        existingPending.planName = resolvedPlan.name
+        existingPending.durationDays = rawDays
+        existingPending.amountCents = resolvedPlan.priceCents
+        existingPending.amountUsd = resolvedPlan.priceUsd
+        existingPending.currency = resolvedPlan.currency
+        existingPending.status = 'ACTIVE'
+        existingPending.activatedBy = authUser.id
+        existingPending.reference = reference
+        existingPending.periodEnd = periodEnd
+        existingPending.activatedAt = new Date().toISOString()
+        subEntry = existingPending
+      } else {
+        subEntry = {
+          id: `sub-${Date.now()}`,
+          userId: targetUser.id,
+          email: targetUser.email,
+          plan: resolvedPlan.slug,
+          planName: resolvedPlan.name,
+          durationDays: rawDays,
+          amountCents: resolvedPlan.priceCents,
+          amountUsd: resolvedPlan.priceUsd,
+          currency: resolvedPlan.currency,
+          paymentMethod: String(data.paymentMethod || 'MANUAL').toUpperCase(),
+          status: 'ACTIVE',
+          activatedBy: authUser.id,
+          reference,
+          periodEnd,
+          createdAt: new Date().toISOString(),
+        }
+        subscriptions.unshift(subEntry)
       }
-      subscriptions.unshift(subEntry)
       saveJson(SUBS_FILE, subscriptions)
 
       logAudit(
@@ -809,6 +937,18 @@ const server = http.createServer((req, res) => {
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ success: true, user: sanitizeUser(targetUser), subscription: subEntry }))
     })
+    return
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/admin/subscriptions/requests') {
+    const authUser = getAuthUser(req)
+    if (!authUser || authUser.role !== 'admin') {
+      res.writeHead(403, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'Admin access required.' }))
+      return
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify(subscriptions.slice(0, 100)))
     return
   }
 
