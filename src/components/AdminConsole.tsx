@@ -168,7 +168,7 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
         <div className="eyebrow">SF CAPITAL FX ADMIN CONSOLE</div>
         <h2>Platform Operations & Signal Dispatch</h2>
         <p className="modal-subtitle">
-          Manage live TradingView alerts, milestone transitions, Telegram delivery queues, and 30-day VIP memberships.
+          Test backend webhook intake, record signal milestones, review Telegram delivery history, and activate verified 30-day memberships.
         </p>
 
         <div className="auth-tabs" style={{ marginBottom: 20 }}>
