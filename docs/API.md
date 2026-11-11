@@ -455,7 +455,7 @@ List membership tiers and features.
 
 **Request:**
 ```http
-GET /memberships/plans
+GET /api/memberships/plans
 ```
 
 **Response (200):**
@@ -463,31 +463,37 @@ GET /memberships/plans
 {
   "plans": [
 	{
-	  "id": 0,
-	  "name": "Free",
-	  "description": "Limited signal access",
-	  "price": 0,
+	  "id": "starter_free",
+	  "slug": "starter_free",
+	  "name": "Public Preview",
+	  "isPremium": false,
+	  "priceUsd": 0,
+	  "priceCents": 0,
+	  "durationDays": 0,
 	  "currency": "USD",
-	  "features": [
-		"2 signals per day",
-		"7-day signal history",
-		"Basic dashboard"
-	  ]
+	  "checkoutMode": "NONE"
 	},
 	{
-	  "id": 1,
-	  "name": "Premium",
-	  "description": "Unlimited signal access",
-	  "price": 29.99,
+	  "id": "premium_30d",
+	  "slug": "premium_30d",
+	  "name": "Premium Monthly",
+	  "isPremium": true,
+	  "priceUsd": 100,
+	  "priceCents": 10000,
+	  "durationDays": 30,
 	  "currency": "USD",
-	  "billing_period": "monthly",
-	  "features": [
-		"Unlimited signals",
-		"Full history",
-		"Advanced analytics",
-		"Priority support",
-		"Telegram alerts"
-	  ]
+	  "checkoutMode": "MANUAL_VERIFICATION"
+	},
+	{
+	  "id": "premium_365d",
+	  "slug": "premium_365d",
+	  "name": "Premium Plus Annual",
+	  "isPremium": true,
+	  "priceUsd": 800,
+	  "priceCents": 80000,
+	  "durationDays": 365,
+	  "currency": "USD",
+	  "checkoutMode": "MANUAL_VERIFICATION"
 	}
   ]
 }
@@ -495,58 +501,42 @@ GET /memberships/plans
 
 ---
 
-### Upgrade Membership
-Initiate upgrade to Premium (payment provider integration).
+### Admin Activate Verified Membership
+Grant verified VIP membership (30 days for Premium Monthly `$100` or 365 days for Premium Plus Annual `$800`).
 
 **Request:**
 ```http
-POST /subscriptions/upgrade
-Authorization: Bearer <token>
+POST /api/admin/subscriptions/activate
+Authorization: Bearer <admin_token>
 Content-Type: application/json
 
 {
-  "plan_id": 1,
-  "payment_method": "card",
-  "billing_period": "monthly"
+  "email": "user@example.com",
+  "plan": "premium_30d",
+  "reference": "TXN_RECEIPT_100_USDT"
 }
-```
-
-**Response (201):**
-```json
-{
-  "subscription_id": 45,
-  "user_id": 1,
-  "tier": 1,
-  "status": "active",
-  "payment_url": "https://checkout.stripe.com/...",
-  "renews_at": "2026-02-15T14:30:00Z"
-}
-```
-
----
-
-### Get Current Subscription
-Retrieve active subscription details.
-
-**Request:**
-```http
-GET /subscriptions/current
-Authorization: Bearer <token>
 ```
 
 **Response (200):**
 ```json
 {
-  "subscription_id": 45,
-  "user_id": 1,
-  "tier": 1,
-  "tier_name": "Premium",
-  "status": "active",
-  "started_at": "2026-01-15T14:30:00Z",
-  "renews_at": "2026-02-15T14:30:00Z",
-  "auto_renew": true,
-  "amount_paid": 29.99,
-  "currency": "USD"
+  "success": true,
+  "user": {
+	"id": "usr-123",
+	"email": "user@example.com",
+	"membershipStatus": "PREMIUM",
+	"membershipPlan": "premium_30d",
+	"premiumExpiresAt": "2026-12-11T00:00:00.000Z"
+  },
+  "subscription": {
+	"id": "sub-1794400000",
+	"plan": "premium_30d",
+	"durationDays": 30,
+	"amountCents": 10000,
+	"amountUsd": 100,
+	"currency": "USD",
+	"status": "ACTIVE"
+  }
 }
 ```
 

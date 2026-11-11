@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react'
-import type { Signal, SignalStatus, User } from '../model/types'
+import type { MembershipPlanSlug, Signal, SignalStatus, User } from '../model/types'
 import { MARKETS } from '../model/symbols'
+import { MEMBERSHIP_PLANS } from '../model/pricing'
 
 interface AdminConsoleProps {
   signals: Signal[]
@@ -19,6 +20,8 @@ interface TelegramDelivery {
   lastAttemptAt: string
   lastError?: string | null
 }
+
+const PAID_PLANS = MEMBERSHIP_PLANS.filter((p) => p.isPremium)
 
 export const AdminConsole: React.FC<AdminConsoleProps> = ({
   signals,
@@ -39,13 +42,38 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
   const [tp2, setTp2] = useState('2708.00')
   const [tp3, setTp3] = useState('2722.00')
   const [secret, setSecret] = useState('')
+  const [isPremiumOnly, setIsPremiumOnly] = useState(false)
   const [isSimulating, setIsSimulating] = useState(false)
+
+  // Membership verification & activation state
   const [targetEmail, setTargetEmail] = useState('')
+  const [selectedPlan, setSelectedPlan] = useState<MembershipPlanSlug>('premium_30d')
   const [paymentReference, setPaymentReference] = useState('')
   const [isActivating, setIsActivating] = useState(false)
+
+  // Telegram deliveries state
   const [telegramDeliveries, setTelegramDeliveries] = useState<TelegramDelivery[]>([])
   const [telegramError, setTelegramError] = useState<string | null>(null)
   const [isTelegramLoading, setIsTelegramLoading] = useState(false)
+
+  const activePlan = PAID_PLANS.find((p) => p.slug === selectedPlan) || PAID_PLANS[0]
+
+  const applyDefaultLevels = (pairSymbol: string, dir: 'BUY' | 'SELL') => {
+    const m = MARKETS.find((item) => item.symbol === pairSymbol)
+    if (!m) return
+    setEntryPrice(m.price.toFixed(m.digits))
+    if (dir === 'BUY') {
+      setStopLoss((m.price * 0.995).toFixed(m.digits))
+      setTp1((m.price * 1.005).toFixed(m.digits))
+      setTp2((m.price * 1.01).toFixed(m.digits))
+      setTp3((m.price * 1.018).toFixed(m.digits))
+    } else {
+      setStopLoss((m.price * 1.005).toFixed(m.digits))
+      setTp1((m.price * 0.995).toFixed(m.digits))
+      setTp2((m.price * 0.99).toFixed(m.digits))
+      setTp3((m.price * 0.982).toFixed(m.digits))
+    }
+  }
 
   useEffect(() => {
     if (tab !== 'telegram') return
@@ -69,7 +97,9 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
         if (isCurrent) setTelegramDeliveries(data)
       })
       .catch((error) => {
-        if (isCurrent) setTelegramError(error instanceof Error ? error.message : 'Unable to load Telegram delivery history.')
+        if (isCurrent) {
+          setTelegramError(error instanceof Error ? error.message : 'Unable to load Telegram delivery history.')
+        }
       })
       .finally(() => {
         if (isCurrent) setIsTelegramLoading(false)
@@ -85,7 +115,7 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
     setIsSimulating(true)
 
     const payload = {
-      secret,
+      secret: secret.trim(),
       pair: selectedPair,
       signal: direction,
       entry: parseFloat(entryPrice),
@@ -93,6 +123,7 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
       tp1: parseFloat(tp1),
       tp2: parseFloat(tp2),
       tp3: parseFloat(tp3),
+      isPremiumOnly,
       time: new Date().toISOString(),
       timeframe: '15m',
     }
@@ -105,8 +136,12 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
       })
       const result = await response.json()
       if (!response.ok || !result.accepted) throw new Error(result.error || 'Webhook request failed.')
+      if (result.duplicate) {
+        onToast(`Duplicate webhook within 60s window (${result.id}); existing setup retained.`)
+        return
+      }
       if (result.signal) onAddSignal(result.signal)
-      onToast(`Backend accepted ${selectedPair} ${direction}.`)
+      onToast(`✓ Backend accepted ${selectedPair} ${direction}.`)
     } catch (error) {
       onToast(error instanceof Error ? error.message : 'Webhook request failed.')
     } finally {
@@ -128,7 +163,7 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
       const result = await response.json()
       if (!response.ok) throw new Error(result.error || 'Milestone update failed.')
       onUpdateSignal(result.signal)
-      onToast(`Signal ${signalId} updated to ${status}.`)
+      onToast(`✓ Signal ${signalId} updated to ${status}.`)
     } catch (error) {
       onToast(error instanceof Error ? error.message : 'Milestone update failed.')
     }
@@ -145,13 +180,18 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
           'Content-Type': 'application/json',
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
-        body: JSON.stringify({ email: targetEmail, days: 30, reference: paymentReference }),
+        body: JSON.stringify({
+          email: targetEmail.trim(),
+          plan: activePlan.slug,
+          days: activePlan.durationDays,
+          reference: paymentReference.trim(),
+        }),
       })
       const result = await response.json()
       if (!response.ok) throw new Error(result.error || 'Membership activation failed.')
       setTargetEmail('')
       setPaymentReference('')
-      onToast(`30-day VIP activated for ${result.user.email}.`)
+      onToast(`✓ ${activePlan.name} (${activePlan.durationDays}d · $${activePlan.priceUsd}) activated for ${result.user.email}.`)
     } catch (error) {
       onToast(error instanceof Error ? error.message : 'Membership activation failed.')
     } finally {
@@ -160,38 +200,42 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
   }
 
   return (
-    <div className="modal-backdrop open" onClick={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="modal admin-modal" role="dialog" aria-modal="true">
-        <button className="modal-close" onClick={onClose} aria-label="Close">
-          ×
+    <div className="po-modal-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="po-modal po-admin-modal" role="dialog" aria-modal="true" aria-labelledby="admin-console-title">
+        <button className="po-modal-close" onClick={onClose} aria-label="Close">
+          ✕
         </button>
-        <div className="eyebrow">SF CAPITAL FX ADMIN CONSOLE</div>
-        <h2>Platform Operations & Signal Dispatch</h2>
-        <p className="modal-subtitle">
-          Test backend webhook intake, record signal milestones, review Telegram delivery history, and activate verified 30-day memberships.
+        <div className="po-admin-eyebrow">SF CAPITAL FX ADMIN CONSOLE</div>
+        <h2 id="admin-console-title" className="po-modal-title">Platform Operations & Signal Dispatch</h2>
+        <p className="po-modal-desc">
+          Test backend webhook intake, record signal milestones, review Telegram delivery history, and activate verified VIP memberships.
         </p>
 
-        <div className="auth-tabs" style={{ marginBottom: 20 }}>
+        <div className="po-filter-tabs po-admin-tabs" role="tablist">
           <button
-            className={`auth-tab ${tab === 'webhook' ? 'active' : ''}`}
+            type="button"
+            className={`po-filter-btn ${tab === 'webhook' ? 'active' : ''}`}
             onClick={() => setTab('webhook')}
           >
-            TradingView Webhook
+            Webhook Intake
           </button>
           <button
-            className={`auth-tab ${tab === 'milestones' ? 'active' : ''}`}
+            type="button"
+            className={`po-filter-btn ${tab === 'milestones' ? 'active' : ''}`}
             onClick={() => setTab('milestones')}
           >
-            Milestone Manager ({signals.length})
+            Milestones ({signals.length})
           </button>
           <button
-            className={`auth-tab ${tab === 'members' ? 'active' : ''}`}
+            type="button"
+            className={`po-filter-btn ${tab === 'members' ? 'active' : ''}`}
             onClick={() => setTab('members')}
           >
-            Member Entitlements
+            VIP Entitlements
           </button>
           <button
-            className={`auth-tab ${tab === 'telegram' ? 'active' : ''}`}
+            type="button"
+            className={`po-filter-btn ${tab === 'telegram' ? 'active' : ''}`}
             onClick={() => setTab('telegram')}
           >
             Telegram Outbox
@@ -199,22 +243,17 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
         </div>
 
         {tab === 'webhook' && (
-          <form onSubmit={handleSimulateWebhook} className="admin-form">
-            <div className="admin-field-row">
-              <label>
-                Instrument
+          <form onSubmit={handleSimulateWebhook} className="po-admin-form">
+            <div className="po-admin-grid-2">
+              <div className="po-form-group">
+                <label className="po-form-label" htmlFor="admin-pair">Instrument</label>
                 <select
+                  id="admin-pair"
+                  className="po-form-input"
                   value={selectedPair}
                   onChange={(e) => {
                     setSelectedPair(e.target.value)
-                    const m = MARKETS.find((item) => item.symbol === e.target.value)
-                    if (m) {
-                      setEntryPrice(m.price.toString())
-                      setStopLoss((m.price * 0.995).toFixed(m.digits))
-                      setTp1((m.price * 1.005).toFixed(m.digits))
-                      setTp2((m.price * 1.01).toFixed(m.digits))
-                      setTp3((m.price * 1.018).toFixed(m.digits))
-                    }
+                    applyDefaultLevels(e.target.value, direction)
                   }}
                 >
                   {MARKETS.map((m) => (
@@ -223,150 +262,187 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
                     </option>
                   ))}
                 </select>
-              </label>
+              </div>
 
-              <label>
-                Direction
+              <div className="po-form-group">
+                <label className="po-form-label" htmlFor="admin-direction">Direction</label>
                 <select
+                  id="admin-direction"
+                  className="po-form-input"
                   value={direction}
-                  onChange={(e) => setDirection(e.target.value as 'BUY' | 'SELL')}
+                  onChange={(e) => {
+                    const nextDir = e.target.value as 'BUY' | 'SELL'
+                    setDirection(nextDir)
+                    applyDefaultLevels(selectedPair, nextDir)
+                  }}
                 >
-                  <option value="BUY">BUY 🟢</option>
-                  <option value="SELL">SELL 🔴</option>
+                  <option value="BUY">BUY ▲</option>
+                  <option value="SELL">SELL ▼</option>
                 </select>
-              </label>
+              </div>
             </div>
 
-            <div className="admin-field-row">
-              <label>
-                Entry Price
+            <div className="po-admin-grid-2">
+              <div className="po-form-group">
+                <label className="po-form-label" htmlFor="admin-entry">Entry Price</label>
                 <input
+                  id="admin-entry"
                   type="number"
                   step="any"
+                  className="po-form-input"
                   value={entryPrice}
                   onChange={(e) => setEntryPrice(e.target.value)}
                   required
                 />
-              </label>
-              <label>
-                Stop Loss (SL)
+              </div>
+              <div className="po-form-group">
+                <label className="po-form-label" htmlFor="admin-sl">Stop Loss (SL)</label>
                 <input
+                  id="admin-sl"
                   type="number"
                   step="any"
+                  className="po-form-input"
                   value={stopLoss}
                   onChange={(e) => setStopLoss(e.target.value)}
                   required
                 />
-              </label>
+              </div>
             </div>
 
-            <div className="admin-field-row three-col">
-              <label>
-                Take Profit 1
+            <div className="po-admin-grid-3">
+              <div className="po-form-group">
+                <label className="po-form-label" htmlFor="admin-tp1">Take Profit 1</label>
                 <input
+                  id="admin-tp1"
                   type="number"
                   step="any"
+                  className="po-form-input"
                   value={tp1}
                   onChange={(e) => setTp1(e.target.value)}
                   required
                 />
-              </label>
-              <label>
-                Take Profit 2
+              </div>
+              <div className="po-form-group">
+                <label className="po-form-label" htmlFor="admin-tp2">Take Profit 2</label>
                 <input
+                  id="admin-tp2"
                   type="number"
                   step="any"
+                  className="po-form-input"
                   value={tp2}
                   onChange={(e) => setTp2(e.target.value)}
                   required
                 />
-              </label>
-              <label>
-                Take Profit 3
+              </div>
+              <div className="po-form-group">
+                <label className="po-form-label" htmlFor="admin-tp3">Take Profit 3</label>
                 <input
+                  id="admin-tp3"
                   type="number"
                   step="any"
+                  className="po-form-input"
                   value={tp3}
                   onChange={(e) => setTp3(e.target.value)}
                   required
                 />
-              </label>
+              </div>
             </div>
 
-            <label>
-              Webhook Secret (Signed Token)
+            <div className="po-form-group">
+              <label className="po-form-label" htmlFor="admin-secret">Webhook Secret (Signed Token)</label>
               <input
+                id="admin-secret"
                 type="password"
+                className="po-form-input"
+                placeholder="Configured SF_WEBHOOK_SECRET value"
                 value={secret}
                 autoComplete="off"
                 onChange={(e) => setSecret(e.target.value)}
                 required
               />
+            </div>
+
+            <label className="po-admin-checkbox">
+              <input
+                type="checkbox"
+                checked={isPremiumOnly}
+                onChange={(e) => setIsPremiumOnly(e.target.checked)}
+              />
+              <span>Mark as VIP-only signal (mask Entry/SL/TP levels for unauthenticated & FREE accounts)</span>
             </label>
 
             <button
               type="submit"
-              className="btn btn-primary full-btn"
+              className="po-btn-submit"
               disabled={isSimulating}
-              style={{ marginTop: 14 }}
             >
-              {isSimulating ? 'Dispatching...' : '📡 Send TradingView Webhook Alert'}
+              {isSimulating ? 'Dispatching…' : '📡 Send TradingView Webhook Alert'}
             </button>
-            <small className="fine-print">
-              Sends this test payload to the configured backend. It is not created locally if the request fails.
+            <small className="po-admin-note">
+              Sends this payload directly to <code>POST /api/webhooks/tradingview</code>. Nothing is fabricated locally if the backend rejects it.
             </small>
           </form>
         )}
 
         {tab === 'milestones' && (
-          <div className="admin-milestone-list">
-            <p className="admin-notice">
-              Update signal lifecycle state. Each status change records a non-destructive timestamped milestone in the audit trail.
+          <div className="po-admin-list">
+            <p className="po-admin-notice">
+              Advance signal lifecycle states. Each update records an immutable timestamped milestone and triggers Telegram fan-out when configured.
             </p>
             {signals.map((s) => (
-              <div key={s.id} className="admin-signal-row">
-                <div>
-                  <strong>{s.pair}</strong> <span className={`side-pill ${s.direction === 'BUY' ? 'buy' : 'sell'}`}>{s.direction}</span>
-                  <div style={{ fontSize: 11, color: '#8293a4' }}>
-                    Entry: {s.entry} | SL: {s.sl} | TP1: {s.tp1} | Status: <b>{s.status}</b>
+              <div key={s.id} className="po-admin-row">
+                <div className="po-admin-row-info">
+                  <div className="po-admin-row-head">
+                    <strong>{s.pair}</strong>
+                    <span className={`po-card-badge-direction ${s.direction.toLowerCase()}`}>{s.direction}</span>
+                    <span className={`po-status-pill ${s.status.toLowerCase()}`}>{s.status}</span>
+                  </div>
+                  <div className="po-admin-row-sub">
+                    Entry: {s.entry ?? 'VIP'} · SL: {s.sl ?? 'VIP'} · TP1: {s.tp1 ?? 'VIP'}
                   </div>
                 </div>
-                <div className="admin-status-actions">
+                <div className="po-admin-actions">
                   <button
-                    className="btn btn-small"
-                    style={{ background: '#e4f6ef', color: '#087b59', border: '1px solid #11a879' }}
-                    onClick={() => {
-                      void handleUpdateMilestone(s.id, 'TP1_HIT')
-                    }}
+                    type="button"
+                    className="po-admin-action-btn tp"
+                    onClick={() => void handleUpdateMilestone(s.id, 'TP1_HIT')}
                   >
-                    TP1 Hit
+                    TP1
                   </button>
                   <button
-                    className="btn btn-small"
-                    style={{ background: '#e4f6ef', color: '#087b59', border: '1px solid #11a879' }}
-                    onClick={() => {
-                      void handleUpdateMilestone(s.id, 'TP2_HIT')
-                    }}
+                    type="button"
+                    className="po-admin-action-btn tp"
+                    onClick={() => void handleUpdateMilestone(s.id, 'TP2_HIT')}
                   >
-                    TP2 Hit
+                    TP2
                   </button>
                   <button
-                    className="btn btn-small"
-                    style={{ background: '#fdf2f2', color: '#d9534f', border: '1px solid #d9534f' }}
-                    onClick={() => {
-                      void handleUpdateMilestone(s.id, 'SL_HIT')
-                    }}
+                    type="button"
+                    className="po-admin-action-btn gold"
+                    onClick={() => void handleUpdateMilestone(s.id, 'TP3_HIT')}
                   >
-                    SL Hit
+                    TP3
                   </button>
                   <button
-                    className="btn btn-small"
-                    style={{ background: '#102c49', color: '#fff' }}
-                    onClick={() => {
-                      void handleUpdateMilestone(s.id, 'CLOSED')
-                    }}
+                    type="button"
+                    className="po-admin-action-btn sl"
+                    onClick={() => void handleUpdateMilestone(s.id, 'SL_HIT')}
+                  >
+                    SL
+                  </button>
+                  <button
+                    type="button"
+                    className="po-admin-action-btn close"
+                    onClick={() => void handleUpdateMilestone(s.id, 'CLOSED')}
                   >
                     Close
+                  </button>
+                  <button
+                    type="button"
+                    className="po-admin-action-btn neutral"
+                    onClick={() => void handleUpdateMilestone(s.id, 'CANCELLED')}
+                  >
+                    Cancel
                   </button>
                 </div>
               </div>
@@ -375,54 +451,104 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
         )}
 
         {tab === 'members' && (
-          <div className="admin-members-view">
-            <p className="admin-notice">Signed in as {user?.email}. Verify the payment independently before granting access.</p>
-            <form className="admin-form" onSubmit={handleActivateMember}>
-              <label>
-                Member email
-                <input type="email" value={targetEmail} onChange={(e) => setTargetEmail(e.target.value)} required />
-              </label>
-              <label>
-                Verified payment reference
-                <input type="text" value={paymentReference} onChange={(e) => setPaymentReference(e.target.value)} required />
-              </label>
-              <button type="submit" className="btn btn-primary full-btn" disabled={isActivating}>
-                {isActivating ? 'Activating…' : 'Activate 30-day VIP'}
+          <div className="po-admin-members">
+            <p className="po-admin-notice">
+              Signed in as <strong>{user?.email}</strong>. Independently verify the payment receipt before activating an account.
+            </p>
+            <form className="po-admin-form" onSubmit={handleActivateMember}>
+              <div className="po-form-group">
+                <label className="po-form-label" htmlFor="member-email">Member Email</label>
+                <input
+                  id="member-email"
+                  type="email"
+                  className="po-form-input"
+                  placeholder="trader@example.com"
+                  value={targetEmail}
+                  onChange={(e) => setTargetEmail(e.target.value)}
+                  required
+                />
+              </div>
+
+              <div className="po-form-group">
+                <label className="po-form-label" htmlFor="member-plan">Verified Plan & Rate</label>
+                <select
+                  id="member-plan"
+                  className="po-form-input"
+                  value={selectedPlan}
+                  onChange={(e) => setSelectedPlan(e.target.value as MembershipPlanSlug)}
+                >
+                  {PAID_PLANS.map((plan) => (
+                    <option key={plan.slug} value={plan.slug}>
+                      {plan.name} — ${plan.priceUsd} USD ({plan.durationDays} days)
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="po-form-group">
+                <label className="po-form-label" htmlFor="member-ref">Verified Payment Reference</label>
+                <input
+                  id="member-ref"
+                  type="text"
+                  className="po-form-input"
+                  placeholder="USDT TxHash / Bank Ref / Invoice ID"
+                  value={paymentReference}
+                  onChange={(e) => setPaymentReference(e.target.value)}
+                  required
+                />
+              </div>
+
+              <div className="po-payout-box" style={{ marginBottom: 10 }}>
+                <span className="po-payout-label">Recorded Entitlement:</span>
+                <span className="po-payout-val">
+                  ${activePlan.priceUsd} USD · {activePlan.durationDays} days
+                </span>
+              </div>
+
+              <button type="submit" className="po-btn-submit" disabled={isActivating}>
+                {isActivating
+                  ? 'Activating…'
+                  : `Activate ${activePlan.name} (${activePlan.durationDays}d · $${activePlan.priceUsd})`}
               </button>
             </form>
           </div>
         )}
 
         {tab === 'telegram' && (
-          <div className="admin-telegram-view">
-            <div className="telegram-status-summary">
+          <div className="po-admin-list">
+            <div className="po-payout-box">
               <div>
-                <small>TELEGRAM DELIVERY HISTORY</small>
-                <strong>Latest backend outbox records</strong>
+                <div className="po-form-label">Telegram Delivery Outbox</div>
+                <span style={{ fontSize: 12, color: '#8e9fab' }}>Latest backend dispatch records</span>
               </div>
-              <span className="data-note">{isTelegramLoading ? 'Loading' : `${telegramDeliveries.length} records`}</span>
+              <span className="po-winrate-chip">
+                {isTelegramLoading ? 'LOADING' : `${telegramDeliveries.length} RECORDS`}
+              </span>
             </div>
+
             {telegramError ? (
-              <p className="admin-notice" role="alert">{telegramError}</p>
+              <p className="po-form-error" role="alert">{telegramError}</p>
             ) : telegramDeliveries.length === 0 && !isTelegramLoading ? (
-              <p className="admin-notice">No delivery records are available. Confirm that the backend and Telegram credentials are configured.</p>
+              <p className="po-admin-notice">
+                No delivery records are available. Confirm that the backend and Telegram credentials are configured.
+              </p>
             ) : (
-              <div className="admin-milestone-list">
-                {telegramDeliveries.map((delivery) => (
-                  <div className="admin-signal-row" key={delivery.id}>
-                    <div>
-                      <strong>{delivery.messageType}</strong>
-                      <div style={{ fontSize: 11, color: '#8293a4' }}>
-                        Signal: {delivery.signalId} · {new Date(delivery.lastAttemptAt).toLocaleString()}
-                      </div>
-                    </div>
-                    <div>
-                      <strong>{delivery.status}</strong>
-                      {delivery.lastError && <div style={{ fontSize: 11, color: '#d9534f' }}>{delivery.lastError}</div>}
+              telegramDeliveries.map((delivery) => (
+                <div className="po-admin-row" key={delivery.id}>
+                  <div className="po-admin-row-info">
+                    <strong>{delivery.messageType}</strong>
+                    <div className="po-admin-row-sub">
+                      Signal: {delivery.signalId} · {new Date(delivery.lastAttemptAt).toLocaleString()}
                     </div>
                   </div>
-                ))}
-              </div>
+                  <div style={{ textAlign: 'right' }}>
+                    <span className={`po-status-pill ${delivery.status.toLowerCase()}`}>{delivery.status}</span>
+                    {delivery.lastError && (
+                      <div style={{ fontSize: 11, color: '#ff8296', marginTop: 4 }}>{delivery.lastError}</div>
+                    )}
+                  </div>
+                </div>
+              ))
             )}
           </div>
         )}

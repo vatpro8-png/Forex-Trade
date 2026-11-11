@@ -24,11 +24,15 @@ tp3Multiplier = input.float(3.5, "TP3 Runner Ratio", minval=1.5, step=0.1, group
 emaFast = ta.ema(close, emaFastLength)
 emaSlow = ta.ema(close, emaSlowLength)
 atrValue = ta.atr(atrPeriod)
+rsi = ta.rsi(close, 14)
+
+// Ensure valid, strictly positive risk distance after tick rounding
+float rawRisk = na(atrValue) ? na : math.max(atrValue * atrMultiplier, syminfo.mintick * 5)
+bool indicatorsReady = not na(emaFast) and not na(emaSlow) and not na(rsi) and not na(rawRisk) and rawRisk > 0 and close > 0
 
 // Filter: Momentum Confluence
-rsi = ta.rsi(close, 14)
-bullishConfluence = ta.crossover(emaFast, emaSlow) and rsi > 50
-bearishConfluence = ta.crossunder(emaFast, emaSlow) and rsi < 50
+bullishConfluence = indicatorsReady and ta.crossover(emaFast, emaSlow) and rsi > 50
+bearishConfluence = indicatorsReady and ta.crossunder(emaFast, emaSlow) and rsi < 50
 
 // Track active signal levels
 var float entryPrice = na
@@ -38,45 +42,73 @@ var float tp2Price = na
 var float tp3Price = na
 var string activeDirection = ""
 
-// Signal Triggers
+// Signal Triggers (bar close confirmed only)
 buySignal = barstate.isconfirmed and bullishConfluence and activeDirection != "BUY"
 sellSignal = barstate.isconfirmed and bearishConfluence and activeDirection != "SELL"
 
 if buySignal
     entryPrice := close
-    stopLossPrice := close - (atrValue * atrMultiplier)
+    stopLossPrice := math.max(syminfo.mintick, entryPrice - rawRisk)
     float risk = entryPrice - stopLossPrice
-    tp1Price := entryPrice + (risk * tp1Multiplier)
-    tp2Price := entryPrice + (risk * tp2Multiplier)
-    tp3Price := entryPrice + (risk * tp3Multiplier)
-    activeDirection := "BUY"
+    if risk > 0
+        tp1Price := entryPrice + (risk * tp1Multiplier)
+        tp2Price := entryPrice + (risk * tp2Multiplier)
+        tp3Price := entryPrice + (risk * tp3Multiplier)
+        activeDirection := "BUY"
 
 if sellSignal
     entryPrice := close
-    stopLossPrice := close + (atrValue * atrMultiplier)
+    stopLossPrice := entryPrice + rawRisk
     float risk = stopLossPrice - entryPrice
-    tp1Price := entryPrice - (risk * tp1Multiplier)
-    tp2Price := entryPrice - (risk * tp2Multiplier)
-    tp3Price := entryPrice - (risk * tp3Multiplier)
-    activeDirection := "SELL"
+    if risk > 0
+        tp1Price := math.max(syminfo.mintick * 3, entryPrice - (risk * tp1Multiplier))
+        tp2Price := math.max(syminfo.mintick * 2, entryPrice - (risk * tp2Multiplier))
+        tp3Price := math.max(syminfo.mintick, entryPrice - (risk * tp3Multiplier))
+        activeDirection := "SELL"
+
+// Strict ordering check before firing webhook JSON
+bool levelsOrdered = not na(entryPrice) and not na(stopLossPrice) and not na(tp1Price) and not na(tp2Price) and not na(tp3Price) and (
+     (activeDirection == "BUY" and stopLossPrice < entryPrice and entryPrice < tp1Price and tp1Price < tp2Price and tp2Price < tp3Price) or
+     (activeDirection == "SELL" and stopLossPrice > entryPrice and entryPrice > tp1Price and tp1Price > tp2Price and tp2Price > tp3Price)
+ )
 
 // --- Visual Plotting ---
-plot(emaFast, "Fast EMA (20)", color=color.new(#18c58d, 0), linewidth=2)
-plot(emaSlow, "Slow EMA (50)", color=color.new(#c38d35, 0), linewidth=2)
+plot(emaFast, "Fast EMA (20)", color=color.new(#00e676, 0), linewidth=2)
+plot(emaSlow, "Slow EMA (50)", color=color.new(#ffb300, 0), linewidth=2)
 
-plotshape(buySignal, title="BUY Alert", location=location.belowbar, color=#11a879, style=shape.triangleup, size=size.small, text="SF BUY")
-plotshape(sellSignal, title="SELL Alert", location=location.abovebar, color=#d9534f, style=shape.triangledown, size=size.small, text="SF SELL")
+plotshape(buySignal, title="BUY Alert", location=location.belowbar, color=#00e676, style=shape.triangleup, size=size.small, text="SF BUY")
+plotshape(sellSignal, title="SELL Alert", location=location.abovebar, color=#ff3358, style=shape.triangledown, size=size.small, text="SF SELL")
+
+formatTimeframe(tf) =>
+    switch tf
+        "1" => "1m"
+        "3" => "3m"
+        "5" => "5m"
+        "15" => "15m"
+        "30" => "30m"
+        "60" => "1h"
+        "120" => "2h"
+        "240" => "4h"
+        "D" => "1d"
+        "1D" => "1d"
+        "W" => "1w"
+        => str.replace_all(tf, "/", "")
+
+escapeJson(val) =>
+    str.replace_all(str.replace_all(val, "\\", "\\\\"), '"', '\\"')
 
 // alert() supports the dynamic JSON required by the webhook receiver.
 buildAlertJson(direction) =>
-    '{"secret":"' + webhookSecret + '","pair":"' + syminfo.ticker + '","signal":"' + direction + '","timeframe":"' + timeframe.period + '","entry":' + str.tostring(entryPrice, format.mintick) + ',"sl":' + str.tostring(stopLossPrice, format.mintick) + ',"tp1":' + str.tostring(tp1Price, format.mintick) + ',"tp2":' + str.tostring(tp2Price, format.mintick) + ',"tp3":' + str.tostring(tp3Price, format.mintick) + ',"time":"' + str.format_time(time_close, "yyyy-MM-dd'T'HH:mm:ss'Z'", "UTC") + '"}'
+    string cleanSecret = escapeJson(str.trim(webhookSecret))
+    string cleanPair = escapeJson(str.replace_all(syminfo.ticker, "/", ""))
+    string cleanTf = escapeJson(formatTimeframe(timeframe.period))
+    '{"secret":"' + cleanSecret + '","pair":"' + cleanPair + '","signal":"' + direction + '","timeframe":"' + cleanTf + '","entry":' + str.tostring(entryPrice, format.mintick) + ',"sl":' + str.tostring(stopLossPrice, format.mintick) + ',"tp1":' + str.tostring(tp1Price, format.mintick) + ',"tp2":' + str.tostring(tp2Price, format.mintick) + ',"tp3":' + str.tostring(tp3Price, format.mintick) + ',"time":"' + str.format_time(time_close, "yyyy-MM-dd'T'HH:mm:ss'Z'", "UTC") + '"}'
 
-if buySignal and webhookSecret != ""
+if buySignal and str.trim(webhookSecret) != "" and levelsOrdered
     alert(buildAlertJson("BUY"), alert.freq_once_per_bar_close)
-if sellSignal and webhookSecret != ""
+if sellSignal and str.trim(webhookSecret) != "" and levelsOrdered
     alert(buildAlertJson("SELL"), alert.freq_once_per_bar_close)
 
 // These static conditions provide chart alerts; select "Any alert() function call" for webhook JSON.
 alertcondition(buySignal, title="SF CAPITAL BUY Alert", message="BUY setup confirmed. Select Any alert() function call for the JSON webhook payload.")
 alertcondition(sellSignal, title="SF CAPITAL SELL Alert", message="SELL setup confirmed. Select Any alert() function call for the JSON webhook payload.")
-

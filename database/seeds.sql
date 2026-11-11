@@ -2,8 +2,9 @@
 
 -- Membership Plans
 INSERT INTO membership_plans (id, slug, name, is_premium, price_cents, duration_days, currency) VALUES
-('11111111-1111-1111-1111-111111111111', 'starter_free', 'Starter Free', false, 0, 0, 'USD'),
-('22222222-2222-2222-2222-222222222222', 'premium_30d', 'Premium 30 Days', true, 10000, 30, 'USD')
+('11111111-1111-1111-1111-111111111111', 'starter_free', 'Public Preview', false, 0, 0, 'USD'),
+('22222222-2222-2222-2222-222222222222', 'premium_30d', 'Premium Monthly', true, 10000, 30, 'USD'),
+('33333333-3333-3333-3333-333333333333', 'premium_365d', 'Premium Plus Annual', true, 80000, 365, 'USD')
 ON CONFLICT (slug) DO NOTHING;
 
 -- Default Admin User (Password: "AdminSecurePass2026!")

@@ -16,21 +16,23 @@ export interface Signal {
   direction: SignalDirection
   action?: SignalDirection
   timeframe: string
-  entry: number
-  entryPrice?: number
-  sl: number
-  stopLoss?: number
-  tp1: number
-  tp2: number
-  tp3: number
-  takeProfit?: number
+  entry: number | null
+  entryPrice?: number | null
+  sl: number | null
+  stopLoss?: number | null
+  tp1: number | null
+  tp2: number | null
+  tp3: number | null
+  takeProfit?: number | null
   time: string
   signalTime?: string
   status: SignalStatus
   source: string
-  pnlPips?: number
+  pnlPips?: number | null
   isPremiumOnly?: boolean
-  milestones?: { milestone: string; time: string }[]
+  isLocked?: boolean
+  isPartial?: boolean
+  milestones?: { milestone: string; time: string; price?: number }[]
 }
 
 export interface PerformanceStats {
@@ -44,6 +46,22 @@ export interface PerformanceStats {
 
 export type UserRole = 'member' | 'admin'
 export type MembershipStatus = 'FREE' | 'PREMIUM'
+export type MembershipPlanSlug = 'starter_free' | 'premium_30d' | 'premium_365d'
+
+export interface MembershipPlan {
+  id: MembershipPlanSlug
+  slug: MembershipPlanSlug
+  name: string
+  isPremium: boolean
+  priceUsd: number
+  priceCents: number
+  durationDays: number
+  currency: 'USD'
+  checkoutMode: 'NONE' | 'MANUAL_VERIFICATION'
+  badge?: string
+  tagline: string
+  features: string[]
+}
 
 export interface User {
   id: string
@@ -51,7 +69,8 @@ export interface User {
   name: string
   role: UserRole
   membershipStatus: MembershipStatus
-  premiumExpiresAt?: string
+  membershipPlan?: MembershipPlanSlug
+  premiumExpiresAt?: string | null
   createdAt?: string
 }
 

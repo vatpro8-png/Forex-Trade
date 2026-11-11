@@ -1,22 +1,37 @@
 import React, { useState, useEffect, useMemo } from 'react'
-import type { Signal, User, SignalStatus } from './model/types'
+import type { MembershipPlan, Signal, User, SignalStatus } from './model/types'
 import { MARKETS } from './model/symbols'
 import { INITIAL_SIGNALS } from './data/mockSignals'
-import { formatDate, copyToClipboard } from './model/format'
+import { MEMBERSHIP_PLANS } from './model/pricing'
+import { formatDate, formatPrice, formatPips, parseOptionalNumber, copyToClipboard } from './model/format'
 import { TradingChart } from './components/TradingChart'
 import { AdminConsole } from './components/AdminConsole'
 
+interface PaperOrder {
+  id: string
+  pair: string
+  direction: 'BUY' | 'SELL'
+  entryRef: number
+  riskUsd: number
+  time: string
+}
+
+const RISK_PRESETS = [25, 50, 100, 200]
+
 export const App: React.FC = () => {
   const [signals, setSignals] = useState<Signal[]>(INITIAL_SIGNALS)
+  const [plans, setPlans] = useState<MembershipPlan[]>(MEMBERSHIP_PLANS)
   const [selectedMarket, setSelectedMarket] = useState<string>('XAUUSD')
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'ACTIVE' | 'CLOSED' | 'VIP'>('ALL')
   const demoBalance = 10000.0
+  const maxRiskPerTrade = Math.max(1, Math.floor(demoBalance * 0.02))
   const [tradeAmount, setTradeAmount] = useState<number>(100)
-  const [livePrice, setLivePrice] = useState<number>(2686.5)
+  const [livePrice, setLivePrice] = useState<number>(MARKETS[0].price)
+  const [paperOrders, setPaperOrders] = useState<PaperOrder[]>([])
   const webhookUrl = `${window.location.origin}/api/webhooks/tradingview`
 
   const [user, setUser] = useState<User | null>(null)
-
+  const [selectedVipPlan, setSelectedVipPlan] = useState<MembershipPlan>(MEMBERSHIP_PLANS[1])
   const [activeModal, setActiveModal] = useState<'auth' | 'vip' | 'admin' | null>(null)
   const [toastMessage, setToastMessage] = useState<string | null>(null)
   const [isLiveConnected, setIsLiveConnected] = useState(false)
@@ -36,7 +51,44 @@ export const App: React.FC = () => {
     }, 3200)
   }
 
-  // Fetch live signals from API
+  const currentMarket = useMemo(() => {
+    return MARKETS.find((m) => m.symbol === selectedMarket) || MARKETS[0]
+  }, [selectedMarket])
+
+  useEffect(() => {
+    setLivePrice(currentMarket.price)
+  }, [currentMarket])
+
+  // Fetch canonical pricing from backend if reachable
+  useEffect(() => {
+    let active = true
+    fetch('/api/memberships/plans')
+      .then(async (res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!active || !Array.isArray(data?.plans) || data.plans.length === 0) return
+        setPlans((prev) =>
+          prev.map((localPlan) => {
+            const serverPlan = data.plans.find((p: any) => p.slug === localPlan.slug)
+            return serverPlan
+              ? {
+                  ...localPlan,
+                  name: serverPlan.name || localPlan.name,
+                  priceUsd: Number.isFinite(Number(serverPlan.priceUsd)) ? Number(serverPlan.priceUsd) : localPlan.priceUsd,
+                  priceCents: Number.isFinite(Number(serverPlan.priceCents)) ? Number(serverPlan.priceCents) : localPlan.priceCents,
+                  durationDays: Number.isFinite(Number(serverPlan.durationDays)) ? Number(serverPlan.durationDays) : localPlan.durationDays,
+                }
+              : localPlan
+          })
+        )
+      })
+      .catch(() => null)
+
+    return () => {
+      active = false
+    }
+  }, [])
+
+  // Fetch live signals from API (preserving null server masks!)
   const fetchSignals = async () => {
     try {
       const token = localStorage.getItem('sf-session-token')
@@ -50,17 +102,20 @@ export const App: React.FC = () => {
             id: item.id,
             pair: item.pair,
             direction: item.signal === 'SELL' || item.direction === 'SELL' ? 'SELL' : 'BUY',
-            entry: Number(item.entry),
-            sl: Number(item.sl),
-            tp1: Number(item.tp1),
-            tp2: Number(item.tp2),
-            tp3: Number(item.tp3),
+            entry: parseOptionalNumber(item.entry),
+            sl: parseOptionalNumber(item.sl),
+            tp1: parseOptionalNumber(item.tp1),
+            tp2: parseOptionalNumber(item.tp2),
+            tp3: parseOptionalNumber(item.tp3),
             time: item.time || new Date().toISOString(),
             status: (item.status as SignalStatus) || 'ACTIVE',
             timeframe: item.timeframe || '15m',
-            source: 'TradingView',
+            source: item.source || 'TradingView',
             isPremiumOnly: Boolean(item.isPremiumOnly),
-            pnlPips: Number.isFinite(Number(item.pnlPips)) ? Number(item.pnlPips) : undefined,
+            isLocked: Boolean(item.isLocked),
+            isPartial: Boolean(item.isPartial),
+            pnlPips: parseOptionalNumber(item.pnlPips),
+            milestones: Array.isArray(item.milestones) ? item.milestones : undefined,
           }))
           setSignals(mapped)
           setIsLiveConnected(true)
@@ -103,15 +158,11 @@ export const App: React.FC = () => {
     }
   }, [])
 
-  // Market info
-  const currentMarket = useMemo(() => {
-    return MARKETS.find((m) => m.symbol === selectedMarket) || MARKETS[0]
-  }, [selectedMarket])
-
-  // Featured signal for the selected market
+  // Featured accessible signal for the selected market chart
   const activeSignal = useMemo(() => {
+    const hasPremiumAccess = user?.membershipStatus === 'PREMIUM' || user?.role === 'admin'
     const accessibleSignals = signals.filter(
-      (signal) => !signal.isPremiumOnly || user?.membershipStatus === 'PREMIUM' || user?.role === 'admin'
+      (signal) => !signal.isLocked && (!signal.isPremiumOnly || hasPremiumAccess)
     )
     return (
       accessibleSignals.find(
@@ -122,15 +173,20 @@ export const App: React.FC = () => {
     )
   }, [signals, currentMarket, user])
 
-  const tp1RiskMultiple = activeSignal && activeSignal.entry !== activeSignal.sl
-    ? Math.abs(activeSignal.tp1 - activeSignal.entry) / Math.abs(activeSignal.entry - activeSignal.sl)
-    : null
+  const tp1RiskMultiple =
+    activeSignal &&
+    activeSignal.entry !== null &&
+    activeSignal.sl !== null &&
+    activeSignal.tp1 !== null &&
+    activeSignal.entry !== activeSignal.sl
+      ? Math.abs(activeSignal.tp1 - activeSignal.entry) / Math.abs(activeSignal.entry - activeSignal.sl)
+      : null
 
   // Filtered signals for the matrix
   const filteredSignals = useMemo(() => {
     return signals.filter((s) => {
       if (statusFilter === 'ACTIVE') return s.status === 'ACTIVE' || s.status.includes('TP')
-      if (statusFilter === 'CLOSED') return s.status === 'CLOSED' || s.status === 'SL_HIT'
+      if (statusFilter === 'CLOSED') return s.status === 'CLOSED' || s.status === 'SL_HIT' || s.status === 'CANCELLED'
       if (statusFilter === 'VIP') return s.isPremiumOnly
       return true
     })
@@ -151,20 +207,43 @@ export const App: React.FC = () => {
     }
   }, [signals])
 
-  // The interface has no connected broker; this action never places a real order.
+  // Paper simulation only; no live broker order is placed
   const handleExecuteTrade = (direction: 'BUY' | 'SELL') => {
-    showToast(`${direction} paper simulation only for ${currentMarket.symbol}; no broker is connected.`)
+    const order: PaperOrder = {
+      id: `sim-${Date.now().toString().slice(-5)}`,
+      pair: currentMarket.symbol,
+      direction,
+      entryRef: Number(livePrice.toFixed(currentMarket.digits)),
+      riskUsd: tradeAmount,
+      time: new Date().toLocaleTimeString('en-US', { hour12: false }),
+    }
+    setPaperOrders((prev) => [order, ...prev].slice(0, 4))
+    showToast(`${direction} paper ticket logged (${currentMarket.symbol} @ $${tradeAmount} risk); no broker connected.`)
   }
 
-  // Copy signal to clipboard
+  const handleFocusSignalOnChart = (pair: string) => {
+    if (MARKETS.some((m) => m.symbol === pair)) {
+      setSelectedMarket(pair)
+      document.getElementById('terminal-chart')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    } else {
+      showToast(`No interactive chart template for ${pair}.`)
+    }
+  }
+
+  // Copy signal safely respecting masked targets
   const handleCopy = async (s: Signal) => {
+    const isCardLocked = s.isLocked || (s.isPremiumOnly && user?.membershipStatus !== 'PREMIUM' && user?.role !== 'admin')
+    if (isCardLocked) {
+      showToast('Sign in with an active VIP membership to copy premium signal levels.')
+      return
+    }
     const text = `⚡ SF CAPITAL FX SIGNAL ⚡
 Pair: #${s.pair}
 Action: ${s.direction}
 Timeframe: ${s.timeframe}
-Entry: ${s.entry}
-Stop Loss: ${s.sl}
-TP1: ${s.tp1} | TP2: ${s.tp2} | TP3: ${s.tp3}
+Entry: ${s.entry ?? 'VIP'}
+Stop Loss: ${s.sl ?? 'VIP'}
+TP1: ${s.tp1 ?? 'VIP'} | TP2: ${s.tp2 ?? 'VIP'} | TP3: ${s.tp3 ?? 'VIP'}
 Status: ${s.status}
 Source: TradingView Webhook Engine
 ${window.location.origin}`
@@ -209,13 +288,26 @@ ${window.location.origin}`
     showToast('Signed out')
   }
 
+  const openPlanModal = (plan: MembershipPlan) => {
+    setSelectedVipPlan(plan)
+    setActiveModal('vip')
+  }
+
+  const getProgressPercent = (status: SignalStatus) => {
+    if (status === 'TP3_HIT' || status === 'CLOSED') return 100
+    if (status === 'TP2_HIT') return 66
+    if (status === 'TP1_HIT') return 33
+    if (status === 'SL_HIT' || status === 'CANCELLED') return 0
+    return 12
+  }
+
   return (
     <div className="po-platform">
-      <div className={`po-toast ${toastMessage ? 'show' : ''}`}>
+      <div className={`po-toast ${toastMessage ? 'show' : ''}`} role="status">
         <span>{toastMessage}</span>
       </div>
 
-      {/* Top Ticker Tape Ribbon (Pocket Option style) */}
+      {/* Top Ticker Tape Ribbon */}
       <div className="po-top-ribbon">
         <div className="po-ribbon-left">
           <div className="po-live-pulse-badge">
@@ -223,30 +315,38 @@ ${window.location.origin}`
             <span>REFERENCE MARKET DATA</span>
           </div>
           {MARKETS.map((m) => (
-            <div
+            <button
               key={m.symbol}
+              type="button"
               className="po-ticker-item"
               onClick={() => setSelectedMarket(m.symbol)}
             >
               <span className="po-ticker-sym">{m.symbol}</span>
               <span className="po-ticker-price">{m.price.toFixed(m.digits)}</span>
               <span className={`po-ticker-change ${m.change24h >= 0 ? 'up' : 'down'}`}>
-                {m.change24h >= 0 ? '+' : ''}{m.change24h}%
+                {m.change24h >= 0 ? '+' : ''}
+                {m.change24h}%
               </span>
-            </div>
+            </button>
           ))}
         </div>
         <div className="po-ribbon-right">
+          <a href="#signals" className="po-ribbon-link">Signals</a>
+          <span>·</span>
+          <a href="#performance" className="po-ribbon-link">Analytics</a>
+          <span>·</span>
+          <a href="#pricing" className="po-ribbon-link">Plans</a>
+          <span>·</span>
           <a
             href="https://t.me/sfcapitalfrx"
             target="_blank"
             rel="noopener noreferrer"
             className="po-ribbon-link"
           >
-            <span>📱 Telegram: @sfcapitalfrx</span>
+            <span>📱 @sfcapitalfrx</span>
           </a>
           <span>·</span>
-          <span>Signal API: {isLiveConnected ? 'Connected · 25s refresh' : 'Offline · sample feed'}</span>
+          <span>API: {isLiveConnected ? 'Connected' : 'Sample feed'}</span>
         </div>
       </div>
 
@@ -258,7 +358,7 @@ ${window.location.origin}`
             <span className="po-brand-name">
               SF CAPITAL <span>FX</span>
             </span>
-            <span className="po-brand-tag">PRO TRADING TERMINAL</span>
+            <span className="po-brand-tag">STRUCTURED SIGNAL TERMINAL</span>
           </div>
         </div>
 
@@ -267,13 +367,12 @@ ${window.location.origin}`
           {MARKETS.map((m) => (
             <button
               key={m.symbol}
+              type="button"
               className={`po-asset-pill ${selectedMarket === m.symbol ? 'active' : ''}`}
               onClick={() => setSelectedMarket(m.symbol)}
             >
               <span>{m.symbol}</span>
-              <span className="po-payout-badge">
-                {m.category}
-              </span>
+              <span className="po-payout-badge">{m.category}</span>
             </button>
           ))}
         </div>
@@ -289,33 +388,43 @@ ${window.location.origin}`
             </div>
           </div>
 
-          <button className="po-btn-vip-gold" onClick={() => setActiveModal('vip')}>
-            👑 UPGRADE VIP
+          <button
+            type="button"
+            className="po-btn-vip-gold"
+            onClick={() => openPlanModal(plans.find((p) => p.slug === 'premium_30d') || plans[1])}
+          >
+            👑 VIP PLANS
           </button>
 
           {user?.role === 'admin' && (
             <button
+              type="button"
               className="po-btn-icon"
               onClick={() => setActiveModal('admin')}
-              title="Admin Console"
+              title="Open Admin Console"
+              aria-label="Open Admin Console"
             >
               ⚙
             </button>
           )}
 
           <button
-            className="po-btn-icon"
+            type="button"
+            className={`po-user-pill ${user ? 'signed-in' : ''}`}
             onClick={() => setActiveModal('auth')}
-            title="User Account"
           >
-            👤
+            <span>👤</span>
+            <span>
+              {user
+                ? `${user.membershipStatus === 'PREMIUM' ? 'VIP' : 'FREE'}${user.role === 'admin' ? ' · ADMIN' : ''}`
+                : 'Sign In'}
+            </span>
           </button>
         </div>
       </header>
 
       {/* MAIN TRADING ARENA (POCKET OPTION SPLIT TERMINAL) */}
       <main className="po-workspace">
-        {/* Left: Full-Screen Interactive Candlestick Chart */}
         <TradingChart
           market={currentMarket}
           signal={activeSignal}
@@ -323,39 +432,53 @@ ${window.location.origin}`
           onPriceChange={(price) => setLivePrice(price)}
         />
 
-        {/* Right: Pocket Option Order & Signal Execution Panel */}
+        {/* Right: Paper Simulator & Featured Signal Panel */}
         <aside className="po-order-panel">
           <div className="po-panel-header">
-            <span className="po-panel-title">
-              PAPER TRADE SIMULATOR
-            </span>
+            <span className="po-panel-title">PAPER TRADE SIMULATOR</span>
             <span className="po-winrate-chip">NO BROKER</span>
           </div>
 
-          {/* Trade Amount Box */}
+          {/* Risk Budget Input + Quick Presets */}
           <div className="po-input-group">
             <div className="po-input-label">
-              <span>Risk Budget · Demo</span>
+              <span>Risk Budget · Demo (Max 2%)</span>
               <span>USD</span>
             </div>
             <div className="po-input-box">
               <button
+                type="button"
                 className="po-btn-step"
-                onClick={() => setTradeAmount((amount) => Math.max(1, amount - 25))}
+                onClick={() => setTradeAmount((amount) => Math.max(25, amount - 25))}
+                aria-label="Decrease risk amount"
               >
                 -
               </button>
               <span>${tradeAmount}</span>
               <button
+                type="button"
                 className="po-btn-step"
-                onClick={() => setTradeAmount((amount) => Math.min(Math.max(1, Math.floor(demoBalance * 0.02)), amount + 25))}
+                onClick={() => setTradeAmount((amount) => Math.min(maxRiskPerTrade, amount + 25))}
+                aria-label="Increase risk amount"
               >
                 +
               </button>
             </div>
+            <div className="po-preset-pills">
+              {RISK_PRESETS.map((preset) => (
+                <button
+                  key={preset}
+                  type="button"
+                  className={`po-preset-btn ${tradeAmount === preset ? 'active' : ''}`}
+                  onClick={() => setTradeAmount(preset)}
+                >
+                  ${preset}
+                </button>
+              ))}
+            </div>
           </div>
 
-          {/* Payout Return Calculation Box */}
+          {/* Illustrative Target Return Calculation */}
           <div className="po-payout-box">
             <span className="po-payout-label">Illustrative TP1 reward:</span>
             <span className="po-payout-val">
@@ -363,74 +486,107 @@ ${window.location.origin}`
             </span>
           </div>
 
-          {/* HIGH-IMPACT CALL / PUT BUTTONS (POCKET OPTION SIGNATURE) */}
+          {/* High-Impact Simulate Buy / Sell Buttons */}
           <div className="po-action-buttons">
             <button
+              type="button"
               className="po-btn-trade call"
               onClick={() => handleExecuteTrade('BUY')}
             >
               <div className="po-trade-copy">
                 <span className="po-trade-title">SIMULATE BUY</span>
-                <span className="po-trade-subtitle">Paper only · no order routed</span>
+                <span className="po-trade-subtitle">Paper only · @ {livePrice.toFixed(currentMarket.digits)}</span>
               </div>
               <span className="po-trade-icon">▲</span>
             </button>
 
             <button
+              type="button"
               className="po-btn-trade put"
               onClick={() => handleExecuteTrade('SELL')}
             >
               <div className="po-trade-copy">
                 <span className="po-trade-title">SIMULATE SELL</span>
-                <span className="po-trade-subtitle">Paper only · no order routed</span>
+                <span className="po-trade-subtitle">Paper only · @ {livePrice.toFixed(currentMarket.digits)}</span>
               </div>
               <span className="po-trade-icon">▼</span>
             </button>
           </div>
 
-          {/* Active TradingView Signal Card for this asset */}
+          {/* Active Signal Card for selected market */}
           {activeSignal ? (
             <div className="po-signal-preview-box">
               <div className="po-preview-header">
-                <span className="po-preview-pair">#{activeSignal.pair} {activeSignal.timeframe}</span>
-                <span className={`po-preview-status ${activeSignal.status.toLowerCase()}`}>
+                <span className="po-preview-pair">
+                  #{activeSignal.pair} · {activeSignal.timeframe}
+                </span>
+                <span className={`po-status-pill ${activeSignal.status.toLowerCase()}`}>
                   {activeSignal.status}
                 </span>
               </div>
 
               <div className="po-targets-list">
                 <div className="po-target-row">
-                  <span>Entry: {activeSignal.entry}</span>
-                  <span style={{ color: '#00d4ff' }}>{activeSignal.direction}</span>
+                  <span>Entry: {formatPrice(activeSignal.entry, currentMarket.digits)}</span>
+                  <span style={{ color: activeSignal.direction === 'BUY' ? '#00e676' : '#ff3358', fontWeight: 800 }}>
+                    {activeSignal.direction}
+                  </span>
                 </div>
                 <div className="po-target-row">
-                  <span>Stop Loss: {activeSignal.sl}</span>
+                  <span>Stop Loss: {formatPrice(activeSignal.sl, currentMarket.digits)}</span>
                   <span style={{ color: '#ff3358' }}>SL</span>
                 </div>
-                <div className={`po-target-row ${activeSignal.status.includes('TP1') || activeSignal.status.includes('TP2') || activeSignal.status.includes('TP3') ? 'hit' : ''}`}>
-                  <span>Target 1: {activeSignal.tp1}</span>
-                  <span>{activeSignal.status.includes('TP1') ? '✓ HIT' : 'PENDING'}</span>
+                <div
+                  className={`po-target-row ${
+                    activeSignal.status.includes('TP') || activeSignal.status === 'CLOSED' ? 'hit' : ''
+                  }`}
+                >
+                  <span>Target 1: {formatPrice(activeSignal.tp1, currentMarket.digits)}</span>
+                  <span>
+                    {activeSignal.status.includes('TP') || activeSignal.status === 'CLOSED' ? '✓ HIT' : 'PENDING'}
+                  </span>
                 </div>
                 <div className="po-target-bar-bg">
                   <div
-                    className="po-target-bar-fill"
-                    style={{
-                      width: activeSignal.status === 'TP3_HIT' ? '100%' : activeSignal.status === 'TP2_HIT' ? '66%' : activeSignal.status === 'TP1_HIT' ? '33%' : '15%',
-                    }}
+                    className={`po-target-bar-fill ${activeSignal.status === 'SL_HIT' ? 'sl' : ''}`}
+                    style={{ width: `${getProgressPercent(activeSignal.status)}%` }}
                   />
                 </div>
               </div>
 
               <button
+                type="button"
                 className="po-btn-copy-signal"
-                onClick={() => handleCopy(activeSignal)}
+                onClick={() => void handleCopy(activeSignal)}
               >
                 📋 Copy Signal Payload
               </button>
             </div>
           ) : (
-            <div className="po-signal-preview-box" style={{ textAlign: 'center', color: '#56697a' }}>
-              <span>Awaiting next TradingView alert for {currentMarket.symbol}...</span>
+            <div className="po-signal-preview-box" style={{ textAlign: 'center', color: '#8e9fab', fontSize: 12 }}>
+              <span>
+                No unlocked active setup for {currentMarket.symbol}. Sign in with VIP or pick another pair below.
+              </span>
+            </div>
+          )}
+
+          {/* Compact Recent Paper Simulations Log */}
+          {paperOrders.length > 0 && (
+            <div className="po-paper-log">
+              <div className="po-paper-log-head">
+                <span>RECENT PAPER TICKETS</span>
+                <span>NO BROKER</span>
+              </div>
+              {paperOrders.map((order) => (
+                <div key={order.id} className="po-paper-log-row">
+                  <span>
+                    <strong className={order.direction === 'BUY' ? 'bull' : 'bear'}>{order.direction}</strong>{' '}
+                    {order.pair}
+                  </span>
+                  <span>@ {order.entryRef}</span>
+                  <span>${order.riskUsd} · {order.time}</span>
+                </div>
+              ))}
             </div>
           )}
         </aside>
@@ -443,7 +599,11 @@ ${window.location.origin}`
             <div className="po-section-icon">📡</div>
             <div>
               <h2 className="po-section-heading">TradingView Signal Feed</h2>
-              <span className="po-section-subtext">Backend updates poll every 25 seconds; sample records remain visible when offline.</span>
+              <span className="po-section-subtext">
+                {isLiveConnected
+                  ? 'Connected to live backend · refreshes every 25s'
+                  : 'Offline fallback · showing illustrative sample setups'}
+              </span>
             </div>
           </div>
 
@@ -451,10 +611,11 @@ ${window.location.origin}`
             {(['ALL', 'ACTIVE', 'CLOSED', 'VIP'] as const).map((filter) => (
               <button
                 key={filter}
+                type="button"
                 className={`po-filter-btn ${statusFilter === filter ? 'active' : ''}`}
                 onClick={() => setStatusFilter(filter)}
               >
-                {filter === 'ALL' ? 'All Setups' : filter === 'ACTIVE' ? 'Active' : filter === 'CLOSED' ? 'Closed Trades' : 'VIP Only'}
+                {filter === 'ALL' ? 'All Setups' : filter === 'ACTIVE' ? 'Active' : filter === 'CLOSED' ? 'Closed' : 'VIP Only'}
               </button>
             ))}
           </div>
@@ -462,16 +623,30 @@ ${window.location.origin}`
 
         <div className="po-signals-grid">
           {filteredSignals.map((s) => {
-            const isLocked = s.isPremiumOnly && user?.membershipStatus !== 'PREMIUM'
+            const hasPremiumAccess = user?.membershipStatus === 'PREMIUM' || user?.role === 'admin'
+            const isLocked = Boolean(s.isLocked || (s.isPremiumOnly && !hasPremiumAccess))
+            const marketDigits = MARKETS.find((m) => m.symbol === s.pair)?.digits ?? 2
+            const pipsDisplay = formatPips(s.pnlPips)
+            const tp1Hit = s.status.includes('TP1') || s.status.includes('TP2') || s.status.includes('TP3') || s.status === 'CLOSED'
+            const tp2Hit = s.status.includes('TP2') || s.status.includes('TP3') || s.status === 'CLOSED'
+            const tp3Hit = s.status.includes('TP3')
+            const monthlyPlan = plans.find((p) => p.slug === 'premium_30d') || plans[1]
+
             return (
               <div key={s.id} className={`po-signal-card ${isLocked ? 'po-locked-card' : ''}`}>
                 {isLocked && (
                   <div className="po-locked-overlay">
                     <span className="po-locked-crown">👑</span>
-                    <span className="po-locked-title">VIP PRO SIGNAL LOCKED</span>
-                    <span className="po-locked-sub">Exclusive high-conviction breakout signal reserved for VIP members.</span>
-                    <button className="po-btn-unlock-vip" onClick={() => setActiveModal('vip')}>
-                      Unlock for $49/mo
+                    <span className="po-locked-title">VIP SIGNAL LOCKED</span>
+                    <span className="po-locked-sub">
+                      Reserved for verified Premium members (${monthlyPlan.priceUsd} / {monthlyPlan.durationDays} days).
+                    </span>
+                    <button
+                      type="button"
+                      className="po-btn-unlock-vip"
+                      onClick={() => openPlanModal(monthlyPlan)}
+                    >
+                      Unlock VIP · ${monthlyPlan.priceUsd} / 30d
                     </button>
                   </div>
                 )}
@@ -480,72 +655,97 @@ ${window.location.origin}`
                   <div className="po-card-pair-block">
                     <span className="po-card-pair">{s.pair}</span>
                     <span className="po-card-tf">{s.timeframe}</span>
+                    <span className={`po-status-pill ${s.status.toLowerCase()}`}>{s.status}</span>
                   </div>
                   <span className={`po-card-badge-direction ${s.direction.toLowerCase()}`}>
-                    {s.direction === 'BUY' ? '▲ BUY / CALL' : '▼ SELL / PUT'}
+                    {s.direction === 'BUY' ? '▲ BUY' : '▼ SELL'}
                   </span>
                 </div>
 
-                {/* Price Matrix */}
-                <div className="po-card-prices">
+                {/* Full 5-Level Price Matrix */}
+                <div className="po-card-prices five-col">
                   <div className="po-price-col">
                     <span className="po-price-label">ENTRY</span>
-                    <span className="po-price-number">{s.entry}</span>
+                    <span className="po-price-number">{formatPrice(s.entry, marketDigits)}</span>
                   </div>
                   <div className="po-price-col">
-                    <span className="po-price-label">STOP LOSS</span>
-                    <span className="po-price-number sl">{s.sl}</span>
+                    <span className="po-price-label">SL</span>
+                    <span className="po-price-number sl">{formatPrice(s.sl, marketDigits)}</span>
                   </div>
                   <div className="po-price-col">
-                    <span className="po-price-label">TARGET 1</span>
-                    <span className="po-price-number tp1">{s.tp1}</span>
+                    <span className="po-price-label">TP1</span>
+                    <span className="po-price-number tp1">{formatPrice(s.tp1, marketDigits)}</span>
                   </div>
                   <div className="po-price-col">
-                    <span className="po-price-label">TARGET 3</span>
-                    <span className="po-price-number tp3">{s.tp3}</span>
+                    <span className="po-price-label">TP2</span>
+                    <span className={`po-price-number ${s.tp2 === null ? 'vip' : 'tp1'}`}>
+                      {formatPrice(s.tp2, marketDigits, 'VIP')}
+                    </span>
+                  </div>
+                  <div className="po-price-col">
+                    <span className="po-price-label">TP3</span>
+                    <span className={`po-price-number ${s.tp3 === null ? 'vip' : 'tp3'}`}>
+                      {formatPrice(s.tp3, marketDigits, 'VIP')}
+                    </span>
                   </div>
                 </div>
 
                 {/* Milestones Progress Track */}
                 <div className="po-card-milestones">
+                  <div className="po-milestone-track">
+                    <div
+                      className={`po-milestone-track-fill ${s.status === 'SL_HIT' ? 'sl' : ''}`}
+                      style={{ width: `${getProgressPercent(s.status)}%` }}
+                    />
+                  </div>
                   <div className="po-milestone-node">
                     <div className="po-node-dot hit">✓</div>
                     <span className="po-node-text hit">ENTRY</span>
                   </div>
                   <div className="po-milestone-node">
-                    <div className={`po-node-dot ${s.status.includes('TP1') || s.status.includes('TP2') || s.status.includes('TP3') || s.status === 'CLOSED' ? 'hit' : 'active'}`}>
-                      {s.status.includes('TP1') || s.status.includes('TP2') || s.status.includes('TP3') || s.status === 'CLOSED' ? '✓' : '1'}
+                    <div className={`po-node-dot ${s.status === 'SL_HIT' ? 'sl' : tp1Hit ? 'hit' : 'active'}`}>
+                      {s.status === 'SL_HIT' ? '!' : tp1Hit ? '✓' : '1'}
                     </div>
-                    <span className="po-node-text">TP1</span>
+                    <span className={`po-node-text ${tp1Hit ? 'hit' : ''}`}>
+                      {s.status === 'SL_HIT' ? 'SL' : 'TP1'}
+                    </span>
                   </div>
                   <div className="po-milestone-node">
-                    <div className={`po-node-dot ${s.status.includes('TP2') || s.status.includes('TP3') || s.status === 'CLOSED' ? 'hit' : ''}`}>
-                      {s.status.includes('TP2') || s.status.includes('TP3') || s.status === 'CLOSED' ? '✓' : '2'}
+                    <div className={`po-node-dot ${tp2Hit ? 'hit' : ''}`}>
+                      {tp2Hit ? '✓' : '2'}
                     </div>
-                    <span className="po-node-text">TP2</span>
+                    <span className={`po-node-text ${tp2Hit ? 'hit' : ''}`}>TP2</span>
                   </div>
                   <div className="po-milestone-node">
-                    <div className={`po-node-dot ${s.status.includes('TP3') ? 'hit' : ''}`}>
-                      {s.status.includes('TP3') ? '✓' : '3'}
+                    <div className={`po-node-dot ${tp3Hit ? 'hit' : ''}`}>
+                      {tp3Hit ? '✓' : '3'}
                     </div>
-                    <span className="po-node-text">TP3</span>
+                    <span className={`po-node-text ${tp3Hit ? 'hit' : ''}`}>TP3</span>
                   </div>
                 </div>
 
                 {/* Card Footer */}
                 <div className="po-card-footer">
                   <span>{formatDate(s.time)}</span>
-                  <span className={`po-card-pnl ${(s.pnlPips || 0) >= 0 ? 'profit' : 'loss'}`}>
-                    {(s.pnlPips || 0) >= 0 ? `+${s.pnlPips} pips` : `${s.pnlPips} pips`}
-                  </span>
-                  <button
-                    className="po-btn-step"
-                    style={{ width: 'auto', padding: '0 8px', fontSize: '10px' }}
-                    onClick={() => handleCopy(s)}
-                    title="Copy Signal"
-                  >
-                    COPY
-                  </button>
+                  <span className={`po-card-pnl ${pipsDisplay.tone}`}>{pipsDisplay.text}</span>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <button
+                      type="button"
+                      className="po-card-action-btn"
+                      onClick={() => handleFocusSignalOnChart(s.pair)}
+                      title="Inspect on Chart"
+                    >
+                      CHART
+                    </button>
+                    <button
+                      type="button"
+                      className="po-card-action-btn"
+                      onClick={() => void handleCopy(s)}
+                      title="Copy Signal"
+                    >
+                      COPY
+                    </button>
+                  </div>
                 </div>
               </div>
             )
@@ -557,7 +757,9 @@ ${window.location.origin}`
       <section className="po-analytics-section" id="performance">
         <div className="po-section-header">
           <h2 className="po-section-heading">Signal Record Analytics</h2>
-          <span className="po-section-subtext">Calculated from closed records currently loaded; results are not independently audited.</span>
+          <span className="po-section-subtext">
+            Calculated dynamically from closed signals in the active feed; historical figures are not independently audited.
+          </span>
         </div>
         <div className="po-stats-grid">
           <div className="po-stat-card">
@@ -571,10 +773,13 @@ ${window.location.origin}`
 
           <div className="po-stat-card">
             <div className="po-stat-top">
-              <span className="po-stat-label">TOTAL PIPS GAINED</span>
+              <span className="po-stat-label">NET CLOSED PIPS</span>
               <span className="po-stat-icon">📈</span>
             </div>
-            <span className="po-stat-value cyan">{stats.totalPips > 0 ? '+' : ''}{stats.totalPips.toLocaleString()}</span>
+            <span className="po-stat-value cyan">
+              {stats.totalPips > 0 ? '+' : ''}
+              {stats.totalPips.toLocaleString()}
+            </span>
             <span className="po-stat-foot">Closed signal records only</span>
           </div>
 
@@ -590,7 +795,7 @@ ${window.location.origin}`
           <div className="po-stat-card">
             <div className="po-stat-top">
               <span className="po-stat-label">CLOSED RECORDS</span>
-              <span className="po-stat-icon">👥</span>
+              <span className="po-stat-icon">🗂</span>
             </div>
             <span className="po-stat-value">{stats.totalTrades}</span>
             <span className="po-stat-foot">In the currently loaded feed</span>
@@ -601,83 +806,82 @@ ${window.location.origin}`
       {/* VIP MEMBERSHIP PLANS */}
       <section className="po-pricing-section" id="pricing">
         <div style={{ textAlign: 'center', marginBottom: 36 }}>
-          <h2 className="po-section-heading" style={{ fontSize: 26 }}>Membership Plans</h2>
-          <span className="po-section-subtext">Published rates are shown for reference. Online checkout is not configured; VIP access is activated after manual payment verification.</span>
+          <h2 className="po-section-heading" style={{ fontSize: 26 }}>Membership Plans & Pricing</h2>
+          <span className="po-section-subtext">
+            Standard rates: $100 / 30 days (Premium Monthly) and $800 / 365 days (Premium Plus Annual). Online card checkout is disabled; access unlocks after manual payment verification.
+          </span>
         </div>
 
         <div className="po-pricing-grid">
-          {/* Starter Plan */}
-          <div className="po-plan-card">
-            <h3 className="po-plan-name">Free Starter</h3>
-            <div className="po-plan-price">
-              $0 <span>/ forever</span>
+          {plans.map((plan) => (
+            <div
+              key={plan.slug}
+              className={`po-plan-card ${plan.slug === 'premium_30d' ? 'featured' : ''}`}
+            >
+              {plan.badge && (
+                <span className={`po-plan-badge ${plan.slug === 'premium_365d' ? 'gold' : ''}`}>
+                  {plan.badge}
+                </span>
+              )}
+              <h3 className="po-plan-name">{plan.name}</h3>
+              <div className="po-plan-price">
+                ${plan.priceUsd}{' '}
+                <span>
+                  {plan.durationDays === 0 ? '/ public preview' : `/ ${plan.durationDays} days`}
+                </span>
+              </div>
+              <p className="po-plan-tagline">{plan.tagline}</p>
+              <ul className="po-plan-features">
+                {plan.features.map((feat) => (
+                  <li key={feat}>
+                    <span className="check">✓</span> {feat}
+                  </li>
+                ))}
+              </ul>
+              {plan.checkoutMode === 'NONE' ? (
+                <button
+                  type="button"
+                  className="po-btn-plan"
+                  onClick={() => showToast('Public Preview active: VIP setups remain masked until payment verification.')}
+                >
+                  Public Preview Only
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className={`po-btn-plan ${plan.slug === 'premium_30d' ? 'primary' : ''}`}
+                  onClick={() => openPlanModal(plan)}
+                >
+                  Choose {plan.name} · ${plan.priceUsd}
+                </button>
+              )}
             </div>
-            <ul className="po-plan-features">
-              <li><span className="check">✓</span> Selected public signals</li>
-              <li><span className="check">✓</span> TP1 access</li>
-              <li><span className="check">✓</span> Signal feed access</li>
-            </ul>
-            <button className="po-btn-plan" onClick={() => showToast('You are on Free Starter Plan')}>
-              Current Tier
-            </button>
-          </div>
-
-          {/* Pro VIP Plan */}
-          <div className="po-plan-card featured">
-            <h3 className="po-plan-name">VIP Pro</h3>
-            <div className="po-plan-price">
-              $49 <span>/ 30 days</span>
-            </div>
-            <ul className="po-plan-features">
-              <li><span className="check">✓</span> Full TP1–TP3 signal levels</li>
-              <li><span className="check">✓</span> Premium signal access</li>
-              <li><span className="check">✓</span> Telegram delivery when configured</li>
-              <li><span className="check">✓</span> 30-day access after verification</li>
-            </ul>
-            <button className="po-btn-plan primary" onClick={() => setActiveModal('vip')}>
-              Membership details
-            </button>
-          </div>
-
-          {/* Custom Plan */}
-          <div className="po-plan-card">
-            <h3 className="po-plan-name">Custom</h3>
-            <div className="po-plan-price">
-              Quote <span>before payment</span>
-            </div>
-            <ul className="po-plan-features">
-              <li><span className="check">✓</span> Scope and delivery agreed in advance</li>
-              <li><span className="check">✓</span> Written quote before payment</li>
-              <li><span className="check">✓</span> No lifetime promise</li>
-            </ul>
-            <button className="po-btn-plan" onClick={() => setActiveModal('vip')}>
-              Contact for a quote
-            </button>
-          </div>
+          ))}
         </div>
       </section>
 
       {/* TRADINGVIEW & TELEGRAM INTEGRATION DOCK */}
       <section className="po-integration-dock">
         <div className="po-dock-grid">
-          {/* TradingView Webhook Card */}
           <div className="po-dock-card">
             <div className="po-dock-header">
               <div className="po-dock-title">
                 <span>⚡ TradingView Webhook Endpoint</span>
               </div>
-              <span className={`po-dock-badge tv ${isLiveConnected ? 'connected' : ''}`}>{isLiveConnected ? 'API REACHABLE' : 'NOT CONNECTED'}</span>
+              <span className={`po-dock-badge tv ${isLiveConnected ? 'connected' : ''}`}>
+                {isLiveConnected ? 'BACKEND CONNECTED' : 'BACKEND UNCONFIGURED'}
+              </span>
             </div>
             <p style={{ fontSize: 12, color: '#8e9fab', margin: 0 }}>
-              Alerts are stored and distributed only when a persistent backend is configured and reachable.
+              Alerts are stored and distributed only when <code>BACKEND_API_URL</code> and <code>SF_WEBHOOK_SECRET</code> are configured.
             </p>
             <div className="po-code-box">
               <code>{webhookUrl}</code>
               <button
-                className="po-btn-step"
-                style={{ width: 'auto', padding: '0 8px', fontSize: 10 }}
+                type="button"
+                className="po-card-action-btn"
                 onClick={() => {
-                  copyToClipboard(webhookUrl)
+                  void copyToClipboard(webhookUrl)
                   showToast('✓ Webhook URL copied!')
                 }}
               >
@@ -686,7 +890,6 @@ ${window.location.origin}`
             </div>
           </div>
 
-          {/* Telegram Channel Card */}
           <div className="po-dock-card">
             <div className="po-dock-header">
               <div className="po-dock-title">
@@ -695,7 +898,7 @@ ${window.location.origin}`
               <span className="po-dock-badge tg">CONFIGURATION-DEPENDENT</span>
             </div>
             <p style={{ fontSize: 12, color: '#8e9fab', margin: 0 }}>
-              Telegram delivery requires SF_TELEGRAM_BOT_TOKEN and SF_TELEGRAM_CHAT_ID on the backend.
+              Telegram delivery requires <code>SF_TELEGRAM_BOT_TOKEN</code> and <code>SF_TELEGRAM_CHAT_ID</code> on the backend.
             </p>
             <div className="po-code-box">
               <code>Channel: @sfcapitalfrx · Bot: @SFCapitalFxbot</code>
@@ -703,8 +906,7 @@ ${window.location.origin}`
                 href="https://t.me/sfcapitalfrx"
                 target="_blank"
                 rel="noopener noreferrer"
-                className="po-btn-step"
-                style={{ width: 'auto', padding: '0 8px', fontSize: 10 }}
+                className="po-card-action-btn"
               >
                 JOIN
               </a>
@@ -716,48 +918,108 @@ ${window.location.origin}`
       {/* FOOTER */}
       <footer className="po-footer">
         <div>
-          <strong>SF CAPITAL FX</strong> · Automated Trading Infrastructure © 2026. All rights reserved.
+          <strong>SF CAPITAL FX</strong> · Educational Signal Platform © 2026. Trading involves risk; signals are not investment advice.
         </div>
         <div className="po-footer-links">
           <a href="#signals">Signals</a>
-          <a href="#pricing">VIP Plans</a>
-          <a href="https://t.me/sfcapitalfrx" target="_blank" rel="noopener noreferrer">Telegram VIP</a>
-          <a href="https://github.com/vatpro8-png/Forex-Trade" target="_blank" rel="noopener noreferrer">GitHub</a>
+          <a href="#performance">Analytics</a>
+          <a href="#pricing">Pricing</a>
+          <a href="https://t.me/sfcapitalfrx" target="_blank" rel="noopener noreferrer">Telegram</a>
+          <a href="https://web.facebook.com/profile.php?id=61594920310389" target="_blank" rel="noopener noreferrer">Facebook</a>
+          <a href="https://www.youtube.com/@SFCAPITALFX" target="_blank" rel="noopener noreferrer">YouTube</a>
         </div>
       </footer>
 
       {/* AUTH MODAL */}
       {activeModal === 'auth' && (
         <div className="po-modal-overlay" onClick={() => setActiveModal(null)}>
-          <div className="po-modal" onClick={(e) => e.stopPropagation()}>
+          <div className="po-modal" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true">
             <button className="po-modal-close" onClick={() => setActiveModal(null)}>✕</button>
             <h3 className="po-modal-title">Trader Account</h3>
             {user ? (
               <>
-                <p className="po-modal-desc">Signed in as {user.email}. Membership: {user.membershipStatus}.</p>
-                <button className="po-btn-submit" onClick={handleLogout}>Sign out</button>
+                <p className="po-modal-desc">
+                  Signed in as <strong>{user.email}</strong> · Role: <strong>{user.role.toUpperCase()}</strong> · Tier:{' '}
+                  <strong>{user.membershipStatus}</strong>
+                  {user.premiumExpiresAt ? ` (until ${formatDate(user.premiumExpiresAt)})` : ''}.
+                </p>
+                {user.role === 'admin' && (
+                  <button
+                    type="button"
+                    className="po-btn-submit"
+                    style={{ marginBottom: 8 }}
+                    onClick={() => setActiveModal('admin')}
+                  >
+                    ⚙ Open Admin Operations Console
+                  </button>
+                )}
+                <button type="button" className="po-btn-plan" onClick={handleLogout}>
+                  Sign out
+                </button>
               </>
             ) : (
               <>
                 <p className="po-modal-desc">Sign in or create an account to access membership-gated signals.</p>
-                <div className="po-filter-tabs auth-tabs" role="tablist" aria-label="Account access">
-                  <button type="button" className={`po-filter-btn ${authMode === 'login' ? 'active' : ''}`} onClick={() => { setAuthMode('login'); setAuthError(null) }}>Sign in</button>
-                  <button type="button" className={`po-filter-btn ${authMode === 'register' ? 'active' : ''}`} onClick={() => { setAuthMode('register'); setAuthError(null) }}>Create account</button>
+                <div className="po-filter-tabs auth-tabs" role="tablist" aria-label="Account access" style={{ marginBottom: 16 }}>
+                  <button
+                    type="button"
+                    className={`po-filter-btn ${authMode === 'login' ? 'active' : ''}`}
+                    onClick={() => {
+                      setAuthMode('login')
+                      setAuthError(null)
+                    }}
+                  >
+                    Sign in
+                  </button>
+                  <button
+                    type="button"
+                    className={`po-filter-btn ${authMode === 'register' ? 'active' : ''}`}
+                    onClick={() => {
+                      setAuthMode('register')
+                      setAuthError(null)
+                    }}
+                  >
+                    Create account
+                  </button>
                 </div>
                 <form onSubmit={handleAuthSubmit}>
                   {authMode === 'register' && (
                     <div className="po-form-group">
                       <label className="po-form-label" htmlFor="auth-name">Full Name</label>
-                      <input id="auth-name" type="text" className="po-form-input" autoComplete="name" value={authName} onChange={(e) => setAuthName(e.target.value)} />
+                      <input
+                        id="auth-name"
+                        type="text"
+                        className="po-form-input"
+                        autoComplete="name"
+                        value={authName}
+                        onChange={(e) => setAuthName(e.target.value)}
+                      />
                     </div>
                   )}
                   <div className="po-form-group">
                     <label className="po-form-label" htmlFor="auth-email">Email Address</label>
-                    <input id="auth-email" type="email" className="po-form-input" autoComplete="email" required value={authEmail} onChange={(e) => setAuthEmail(e.target.value)} />
+                    <input
+                      id="auth-email"
+                      type="email"
+                      className="po-form-input"
+                      autoComplete="email"
+                      required
+                      value={authEmail}
+                      onChange={(e) => setAuthEmail(e.target.value)}
+                    />
                   </div>
                   <div className="po-form-group">
                     <label className="po-form-label" htmlFor="auth-password">Password</label>
-                    <input id="auth-password" type="password" className="po-form-input" autoComplete={authMode === 'login' ? 'current-password' : 'new-password'} minLength={8} required value={authPassword} onChange={(e) => setAuthPassword(e.target.value)} />
+                    <input
+                      id="auth-password"
+                      type="password"
+                      className="po-form-input"
+                      autoComplete={authMode === 'login' ? 'current-password' : 'new-password'}
+                      minLength={8}
+                      required
+                      value={authPassword}
+                      onChange={(e) => setAuthPassword(e.target.value)}
+                    />
                   </div>
                   {authError && <p className="po-form-error" role="alert">{authError}</p>}
                   <button type="submit" className="po-btn-submit" disabled={isAuthenticating}>
@@ -770,29 +1032,75 @@ ${window.location.origin}`
         </div>
       )}
 
-      {/* VIP MODAL */}
+      {/* VIP MEMBERSHIP VERIFICATION MODAL */}
       {activeModal === 'vip' && (
         <div className="po-modal-overlay" onClick={() => setActiveModal(null)}>
-          <div className="po-modal" onClick={(e) => e.stopPropagation()}>
+          <div className="po-modal" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true">
             <button className="po-modal-close" onClick={() => setActiveModal(null)}>✕</button>
-            <h3 className="po-modal-title">VIP Pro · $49 / 30 days</h3>
+            <h3 className="po-modal-title">
+              👑 {selectedVipPlan.name} · ${selectedVipPlan.priceUsd} / {selectedVipPlan.durationDays} days
+            </h3>
             <p className="po-modal-desc">
-              Checkout is not available on this site. Contact the Telegram channel for current payment instructions; VIP access is enabled only after manual verification.
+              Online checkout is not enabled. Membership requires payment verification through an official SF CAPITAL FX channel before an admin activates your account.
             </p>
-            <div style={{ background: '#111a24', padding: 16, borderRadius: 10, border: '1px solid #1d2d42', marginBottom: 16 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-                <span style={{ fontWeight: 700 }}>VIP Pro · 30-day access</span>
-                <span style={{ color: '#00e676', fontWeight: 800 }}>$49.00 USD</span>
+
+            {/* Quick Plan Switcher inside Modal */}
+            <div className="po-filter-tabs" style={{ marginBottom: 16 }}>
+              {plans
+                .filter((p) => p.isPremium)
+                .map((plan) => (
+                  <button
+                    key={plan.slug}
+                    type="button"
+                    className={`po-filter-btn ${selectedVipPlan.slug === plan.slug ? 'active' : ''}`}
+                    onClick={() => setSelectedVipPlan(plan)}
+                  >
+                    {plan.name} (${plan.priceUsd})
+                  </button>
+                ))}
+            </div>
+
+            <div className="po-vip-summary-box">
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 10 }}>
+                <span style={{ fontWeight: 700, color: '#fff' }}>
+                  {selectedVipPlan.name} ({selectedVipPlan.durationDays}-day access)
+                </span>
+                <span style={{ color: '#00e676', fontWeight: 800, fontFamily: 'var(--font-mono)' }}>
+                  ${selectedVipPlan.priceUsd}.00 {selectedVipPlan.currency}
+                </span>
               </div>
-              <div style={{ fontSize: 12, color: '#8e9fab' }}>
-                • Full TP1–TP3 levels after activation<br />
-                • Telegram delivery when configured<br />
-                • No automatic renewal or payment capture here
+              <ol className="po-vip-steps">
+                <li>1. Contact our official Telegram or social channel to request current payment details.</li>
+                <li>2. Send payment and share your receipt & registered SF CAPITAL FX account email.</li>
+                <li>3. Admin verifies payment and activates {selectedVipPlan.durationDays}-day VIP access in the console.</li>
+              </ol>
+            </div>
+
+            <div className="po-vip-channels">
+              <a className="po-btn-submit" href="https://t.me/sfcapitalfrx" target="_blank" rel="noopener noreferrer">
+                Contact on Telegram (@sfcapitalfrx) ↗
+              </a>
+              <div style={{ display: 'flex', gap: 10, marginTop: 10 }}>
+                <a
+                  className="po-btn-plan"
+                  style={{ textAlign: 'center' }}
+                  href="https://web.facebook.com/profile.php?id=61594920310389"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  Facebook ↗
+                </a>
+                <a
+                  className="po-btn-plan"
+                  style={{ textAlign: 'center' }}
+                  href="https://www.youtube.com/@SFCAPITALFX"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  YouTube ↗
+                </a>
               </div>
             </div>
-            <a className="po-btn-submit" href="https://t.me/sfcapitalfrx" target="_blank" rel="noopener noreferrer">
-              Open Telegram channel
-            </a>
           </div>
         </div>
       )}

@@ -1,53 +1,42 @@
 // Proxy authenticated application APIs to the durable backend.
+import {
+  decodeEventBody,
+  forwardRequest,
+  getBackendUrl,
+  jsonResponse,
+  pickHeaders,
+} from '../lib/proxy.js'
 
 export const handler = async (event) => {
-  const backendUrl = process.env.BACKEND_API_URL?.replace(/\/+$/, '')
+  const backendUrl = getBackendUrl()
   if (!backendUrl) {
-    return {
-      statusCode: 503,
-      headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
-      body: JSON.stringify({ error: 'Application backend is not configured.' }),
-    }
+    return jsonResponse(503, { error: 'Application backend is not configured.' })
   }
 
   const path = (event.path || '').replace(/^\/.netlify\/functions\/backend/, '')
   const apiPath = path.startsWith('/api/') ? path : `/api/${path.replace(/^\/+/, '')}`
   if (apiPath === '/api/events') {
-    return {
-      statusCode: 501,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ error: 'Event streaming is not available through this serverless proxy.' }),
-    }
-  }
-
-  try {
-    const headers = Object.fromEntries(
-      Object.entries(event.headers || {}).filter(([name]) =>
-        ['authorization', 'content-type', 'x-sf-webhook-secret'].includes(name.toLowerCase())
-      )
-    )
-    const body = event.isBase64Encoded
-      ? Buffer.from(event.body || '', 'base64').toString('utf8')
-      : event.body
-    const response = await fetch(`${backendUrl}${apiPath}${event.rawQuery ? `?${event.rawQuery}` : ''}`, {
-      method: event.httpMethod || 'GET',
-      headers,
-      ...(['GET', 'HEAD'].includes(event.httpMethod) || body === undefined ? {} : { body }),
+    return jsonResponse(501, {
+      error: 'Event streaming is not available through this serverless proxy.',
     })
-
-    return {
-      statusCode: response.status,
-      headers: {
-        'Content-Type': response.headers.get('content-type') || 'application/json',
-        'Cache-Control': 'no-store',
-      },
-      body: await response.text(),
-    }
-  } catch {
-    return {
-      statusCode: 502,
-      headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
-      body: JSON.stringify({ error: 'Application backend is unavailable.' }),
-    }
   }
+
+  const headers = pickHeaders(event.headers, [
+    'authorization',
+    'content-type',
+    'x-sf-webhook-secret',
+  ])
+  const body = decodeEventBody(event)
+  const method = event.httpMethod || 'GET'
+  const query = event.rawQuery ? `?${event.rawQuery}` : ''
+
+  return forwardRequest(
+    `${backendUrl}${apiPath}${query}`,
+    {
+      method,
+      headers,
+      ...(['GET', 'HEAD'].includes(method) || body === undefined ? {} : { body }),
+    },
+    'Application backend is unavailable.'
+  )
 }

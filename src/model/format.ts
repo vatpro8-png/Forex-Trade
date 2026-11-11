@@ -1,9 +1,24 @@
-export function formatPrice(value: number | undefined | null, digits = 2): string {
-  if (value === null || value === undefined || isNaN(value)) return '—'
+export function parseOptionalNumber(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') return null
+  const num = Number(value)
+  return Number.isFinite(num) ? num : null
+}
+
+export function formatPrice(value: number | undefined | null, digits = 2, maskedLabel = 'VIP'): string {
+  if (value === null || value === undefined || isNaN(value)) return maskedLabel
   return Number(value).toLocaleString(undefined, {
     minimumFractionDigits: digits,
     maximumFractionDigits: digits,
   })
+}
+
+export function formatPips(value: number | undefined | null): { text: string; tone: 'profit' | 'loss' | 'neutral' } {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return { text: 'Pending', tone: 'neutral' }
+  }
+  if (value > 0) return { text: `+${value} pips`, tone: 'profit' }
+  if (value < 0) return { text: `${value} pips`, tone: 'loss' }
+  return { text: '0 pips', tone: 'neutral' }
 }
 
 export function formatDate(value: string | number | Date | undefined | null): string {

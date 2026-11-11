@@ -10,6 +10,44 @@ const WEBHOOK_SECRET = process.env.SF_WEBHOOK_SECRET || (process.env.NODE_ENV ==
 const JWT_SECRET = process.env.SF_JWT_SECRET || 'sf-capital-fx-super-jwt-secret-key-2026'
 const TG_TOKEN = process.env.SF_TELEGRAM_BOT_TOKEN || ''
 const TG_CHAT_ID = process.env.SF_TELEGRAM_CHAT_ID || ''
+const SITE_URL = (process.env.SITE_URL || 'https://sfcapitalsf.netlify.app').replace(/\/+$/, '')
+
+// Canonical Membership Plans & Pricing (Single Source of Truth)
+const MEMBERSHIP_PLANS = [
+  {
+    id: 'starter_free',
+    slug: 'starter_free',
+    name: 'Public Preview',
+    isPremium: false,
+    priceUsd: 0,
+    priceCents: 0,
+    durationDays: 0,
+    currency: 'USD',
+    checkoutMode: 'NONE',
+  },
+  {
+    id: 'premium_30d',
+    slug: 'premium_30d',
+    name: 'Premium Monthly',
+    isPremium: true,
+    priceUsd: 100,
+    priceCents: 10000,
+    durationDays: 30,
+    currency: 'USD',
+    checkoutMode: 'MANUAL_VERIFICATION',
+  },
+  {
+    id: 'premium_365d',
+    slug: 'premium_365d',
+    name: 'Premium Plus Annual',
+    isPremium: true,
+    priceUsd: 800,
+    priceCents: 80000,
+    durationDays: 365,
+    currency: 'USD',
+    checkoutMode: 'MANUAL_VERIFICATION',
+  },
+]
 
 // Data Paths
 const DATA_DIR = path.join(__dirname, 'data')
@@ -177,6 +215,28 @@ function getAuthUser(req) {
   return user
 }
 
+function sanitizeUser(user) {
+  if (!user) return null
+  const copy = { ...user }
+  delete copy.salt
+  delete copy.passwordHash
+  return copy
+}
+
+function timingSafeCompare(a, b) {
+  const bufA = Buffer.from(String(a || ''), 'utf8')
+  const bufB = Buffer.from(String(b || ''), 'utf8')
+  if (bufA.length === 0 || bufA.length !== bufB.length) return false
+  return crypto.timingSafeEqual(bufA, bufB)
+}
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+}
+
 function logAudit(action, entityType, entityId, details = {}, actorId = null) {
   const entry = {
     id: `aud-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
@@ -193,31 +253,36 @@ function logAudit(action, entityType, entityId, details = {}, actorId = null) {
 }
 
 // Telegram Publication Engine
-async function publishTelegram(signal, milestone = null) {
+async function publishTelegram(signal, milestone = null, milestonePrice = null) {
+  const safePair = escapeHtml(signal.pair)
+  const safeDirection = escapeHtml(signal.direction)
+  const safeTimeframe = escapeHtml(signal.timeframe)
+  const effectivePrice = milestonePrice ?? signal.entry
+
   const text = milestone
     ? `🎯 SF CAPITAL FX — MILESTONE UPDATE 🎯
 ━━━━━━━━━━━━━━━━━━━━
-Pair: #${signal.pair}
-Event: ${milestone.replace('_', ' ')} 🔥
-Price: ${signal.entry}
-Action: ${signal.direction}
+Pair: #${safePair}
+Event: ${escapeHtml(milestone.replace('_', ' '))} 🔥
+Price: ${escapeHtml(effectivePrice)}
+Action: ${safeDirection}
 ━━━━━━━━━━━━━━━━━━━━
-🌐 Platform: https://sfcapitalfx.netlify.app`
+🌐 Platform: ${escapeHtml(SITE_URL)}`
     : `⚡ SF CAPITAL FX — NEW SIGNAL ⚡
 ━━━━━━━━━━━━━━━━━━━━
-🎯 Pair: #${signal.pair}
-📊 Direction: ${signal.direction} ${signal.direction === 'BUY' ? '🟢' : '🔴'}
-⏱ Timeframe: ${signal.timeframe}
-📍 Entry: ${signal.entry}
-🛑 Stop Loss: ${signal.sl}
+🎯 Pair: #${safePair}
+📊 Direction: ${safeDirection} ${signal.direction === 'BUY' ? '🟢' : '🔴'}
+⏱ Timeframe: ${safeTimeframe}
+📍 Entry: ${escapeHtml(signal.entry)}
+🛑 Stop Loss: ${escapeHtml(signal.sl)}
 
-🎯 TP 1: ${signal.tp1}
-🎯 TP 2: ${signal.tp2}
-🎯 TP 3: ${signal.tp3}
+🎯 TP 1: ${escapeHtml(signal.tp1)}
+🎯 TP 2: ${escapeHtml(signal.tp2)}
+🎯 TP 3: ${escapeHtml(signal.tp3)}
 ━━━━━━━━━━━━━━━━━━━━
 🔒 Risk: 1-2% max per trade
 📡 Source: SF CAPITAL FX Verified Engine
-🌐 Web Platform: https://sfcapitalfx.netlify.app`
+🌐 Web Platform: ${escapeHtml(SITE_URL)}`
 
   const delivery = {
     id: `tg-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
@@ -242,6 +307,7 @@ Action: ${signal.direction}
           text,
           parse_mode: 'HTML',
         }),
+        signal: AbortSignal.timeout(8000),
       })
       const result = await resp.json()
       if (result.ok) {
@@ -319,11 +385,22 @@ const server = http.createServer((req, res) => {
     return
   }
 
-  // Helper for reading JSON body
+  // Helper for reading JSON body (with 64KB cap)
   const readBody = (callback) => {
     let body = ''
-    req.on('data', (chunk) => (body += chunk))
+    let tooLarge = false
+    req.on('data', (chunk) => {
+      if (tooLarge) return
+      body += chunk
+      if (body.length > 65536) {
+        tooLarge = true
+        res.writeHead(413, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Payload too large.' }))
+        req.destroy()
+      }
+    })
     req.on('end', () => {
+      if (tooLarge) return
       try {
         const parsed = body ? JSON.parse(body) : {}
         callback(null, parsed)
@@ -336,13 +413,21 @@ const server = http.createServer((req, res) => {
   // 1. Authentication Endpoints
   if (req.method === 'POST' && url.pathname === '/api/auth/register') {
     readBody((err, data) => {
-      if (err || !data.email || !data.password) {
+      if (
+        err ||
+        !data ||
+        typeof data.email !== 'string' ||
+        !data.email.includes('@') ||
+        typeof data.password !== 'string' ||
+        data.password.length < 8
+      ) {
         res.writeHead(400, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ error: 'Valid email and password (minimum 8 characters) required.' }))
         return
       }
 
-      if (users.some((u) => u.email.toLowerCase() === data.email.toLowerCase())) {
+      const normalizedEmail = data.email.trim().toLowerCase()
+      if (users.some((u) => u.email.toLowerCase() === normalizedEmail)) {
         res.writeHead(409, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ error: 'An account with this email already exists.' }))
         return
@@ -352,10 +437,11 @@ const server = http.createServer((req, res) => {
       const hash = crypto.scryptSync(data.password, salt, 64).toString('hex')
       const newUser = {
         id: `usr-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-        email: data.email.toLowerCase(),
-        name: data.name || data.email.split('@')[0],
+        email: normalizedEmail,
+        name: String(data.name || '').trim() || normalizedEmail.split('@')[0],
         role: 'member',
         membershipStatus: 'FREE',
+        membershipPlan: 'starter_free',
         premiumExpiresAt: null,
         salt,
         passwordHash: hash,
@@ -367,47 +453,40 @@ const server = http.createServer((req, res) => {
       logAudit('REGISTER', 'user', newUser.id, { email: newUser.email }, newUser.id)
 
       const token = createToken(newUser)
-      const sanitized = { ...newUser }
-      delete sanitized.salt
-      delete sanitized.passwordHash
-
       res.writeHead(201, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ success: true, user: sanitized, token }))
+      res.end(JSON.stringify({ success: true, user: sanitizeUser(newUser), token }))
     })
     return
   }
 
   if (req.method === 'POST' && url.pathname === '/api/auth/login') {
     readBody((err, data) => {
-      if (err || !data.email || !data.password) {
+      if (err || !data?.email || !data?.password) {
         res.writeHead(400, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ error: 'Email and password required.' }))
         return
       }
 
-      const user = users.find((u) => u.email.toLowerCase() === data.email.toLowerCase())
+      const normalizedEmail = String(data.email).trim().toLowerCase()
+      const user = users.find((u) => u.email.toLowerCase() === normalizedEmail)
       if (!user) {
         res.writeHead(401, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ error: 'Invalid email or password.' }))
         return
       }
 
-      const computedHash = crypto.scryptSync(data.password, user.salt, 64).toString('hex')
-      if (computedHash !== user.passwordHash) {
+      const computedHash = crypto.scryptSync(String(data.password), user.salt, 64).toString('hex')
+      if (!timingSafeCompare(computedHash, user.passwordHash)) {
         res.writeHead(401, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ error: 'Invalid email or password.' }))
         return
       }
 
       const token = createToken(user)
-      const sanitized = { ...user }
-      delete sanitized.salt
-      delete sanitized.passwordHash
-
       logAudit('LOGIN', 'user', user.id, { email: user.email }, user.id)
 
       res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ success: true, user: sanitized, token }))
+      res.end(JSON.stringify({ success: true, user: sanitizeUser(user), token }))
     })
     return
   }
@@ -419,11 +498,15 @@ const server = http.createServer((req, res) => {
       res.end(JSON.stringify({ error: 'Unauthenticated' }))
       return
     }
-    const sanitized = { ...user }
-    delete sanitized.salt
-    delete sanitized.passwordHash
     res.writeHead(200, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify({ user: sanitized }))
+    res.end(JSON.stringify({ user: sanitizeUser(user) }))
+    return
+  }
+
+  // Canonical Membership Plans & Pricing
+  if (req.method === 'GET' && (url.pathname === '/api/memberships/plans' || url.pathname === '/api/pricing')) {
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ plans: MEMBERSHIP_PLANS }))
     return
   }
 
@@ -493,14 +576,19 @@ const server = http.createServer((req, res) => {
         return
       }
 
-      if (!secret || secret !== WEBHOOK_SECRET) {
+      if (!timingSafeCompare(secret, WEBHOOK_SECRET)) {
         res.writeHead(401, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ error: 'Invalid webhook secret token' }))
         return
       }
 
-      const pair = (payload.pair || payload.symbol || '').toUpperCase()
-      const action = (payload.signal || payload.action || '').toUpperCase()
+      const pair = String(payload.pair || payload.symbol || '')
+        .trim()
+        .replaceAll('/', '')
+        .toUpperCase()
+      const action = String(payload.signal || payload.action || '')
+        .trim()
+        .toUpperCase()
 
       if (!/^[A-Z0-9._:-]{2,32}$/.test(pair) || (action !== 'BUY' && action !== 'SELL')) {
         res.writeHead(400, { 'Content-Type': 'application/json' })
@@ -610,8 +698,8 @@ const server = http.createServer((req, res) => {
 
       saveJson(SIGNALS_FILE, signals)
       broadcastSSE('milestone', { signalId: signal.id, status: signal.status, signal })
-      publishTelegram(signal, data.status)
-      logAudit('MILESTONE_UPDATED', 'signal', signal.id, { status: data.status, pnlPips: signal.pnlPips })
+      publishTelegram(signal, data.status, data.price ?? signal.entry)
+      logAudit('MILESTONE_UPDATED', 'signal', signal.id, { status: data.status, pnlPips: signal.pnlPips }, authUser.id)
 
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ success: true, signal }))
@@ -627,14 +715,8 @@ const server = http.createServer((req, res) => {
       res.end(JSON.stringify({ error: 'Admin access required.' }))
       return
     }
-    const sanitized = users.map((u) => {
-      const copy = { ...u }
-      delete copy.salt
-      delete copy.passwordHash
-      return copy
-    })
     res.writeHead(200, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify(sanitized))
+    res.end(JSON.stringify(users.map(sanitizeUser)))
     return
   }
 
@@ -647,35 +729,85 @@ const server = http.createServer((req, res) => {
     }
 
     readBody((err, data) => {
-      const targetUser = users.find((u) => u.id === data.userId || u.email === data.email)
+      if (err || !data || typeof data !== 'object' || Array.isArray(data)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Invalid JSON payload.' }))
+        return
+      }
+
+      const normalizedEmail = String(data.email || '').trim().toLowerCase()
+      const targetUser = users.find(
+        (u) => (data.userId && u.id === data.userId) || (normalizedEmail && u.email.toLowerCase() === normalizedEmail)
+      )
       if (!targetUser) {
         res.writeHead(404, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ error: 'Target user not found.' }))
         return
       }
 
-      const days = data.days || 30
+      const requestedPlan = MEMBERSHIP_PLANS.find(
+        (p) => p.isPremium && (p.slug === data.plan || p.id === data.plan)
+      )
+      const rawDays = data.days !== undefined ? Number(data.days) : requestedPlan?.durationDays ?? 30
+      if (!Number.isInteger(rawDays) || rawDays < 1 || rawDays > 3650) {
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Subscription duration must be an integer between 1 and 3650 days.' }))
+        return
+      }
+
+      const resolvedPlan =
+        requestedPlan ||
+        MEMBERSHIP_PLANS.find((p) => p.isPremium && p.durationDays === rawDays) ||
+        MEMBERSHIP_PLANS.find((p) => p.slug === (rawDays >= 365 ? 'premium_365d' : 'premium_30d'))
+
+      const reference = String(data.reference || '').trim()
+      if (!reference) {
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Verified payment reference is required.' }))
+        return
+      }
+
+      const nowMs = Date.now()
+      const currentExpiryMs =
+        targetUser.membershipStatus === 'PREMIUM' && targetUser.premiumExpiresAt
+          ? new Date(targetUser.premiumExpiresAt).getTime()
+          : 0
+      const baseStartMs = Number.isFinite(currentExpiryMs) && currentExpiryMs > nowMs ? currentExpiryMs : nowMs
+      const periodEnd = new Date(baseStartMs + rawDays * 86400000).toISOString()
+
       targetUser.membershipStatus = 'PREMIUM'
-      targetUser.premiumExpiresAt = new Date(Date.now() + days * 86400000).toISOString()
+      targetUser.membershipPlan = resolvedPlan.slug
+      targetUser.premiumExpiresAt = periodEnd
       saveJson(USERS_FILE, users)
 
       const subEntry = {
         id: `sub-${Date.now()}`,
         userId: targetUser.id,
-        plan: 'premium_30d',
+        plan: resolvedPlan.slug,
+        planName: resolvedPlan.name,
+        durationDays: rawDays,
+        amountCents: resolvedPlan.priceCents,
+        amountUsd: resolvedPlan.priceUsd,
+        currency: resolvedPlan.currency,
         status: 'ACTIVE',
         activatedBy: authUser.id,
-        reference: data.reference || 'ADMIN_MANUAL_VERIFY',
-        periodEnd: targetUser.premiumExpiresAt,
+        reference,
+        periodEnd,
         createdAt: new Date().toISOString(),
       }
       subscriptions.unshift(subEntry)
       saveJson(SUBS_FILE, subscriptions)
 
-      logAudit('ACTIVATE_30D_VIP', 'subscription', subEntry.id, { user: targetUser.email, days }, authUser.id)
+      logAudit(
+        rawDays >= 365 ? 'ACTIVATE_ANNUAL_VIP' : 'ACTIVATE_30D_VIP',
+        'subscription',
+        subEntry.id,
+        { user: targetUser.email, plan: resolvedPlan.slug, days: rawDays, amountUsd: resolvedPlan.priceUsd, reference },
+        authUser.id
+      )
 
       res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ success: true, user: targetUser, subscription: subEntry }))
+      res.end(JSON.stringify({ success: true, user: sanitizeUser(targetUser), subscription: subEntry }))
     })
     return
   }

@@ -107,8 +107,41 @@ async function runTests() {
     }
   })
 
-  // 5. Admin Activates 30-Day VIP Membership
-  await test('POST /api/admin/subscriptions/activate grants 30-Day VIP', async () => {
+  // 5. Canonical Pricing & Admin Subscription Activation
+  await test('GET /api/memberships/plans returns canonical USD pricing', async () => {
+    const res = await fetch(`${BASE_URL}/api/memberships/plans`)
+    assert(res.status === 200, `Expected status 200, got ${res.status}`)
+    const data = await res.json()
+    assert(Array.isArray(data.plans), 'plans array expected')
+    const monthly = data.plans.find((p) => p.slug === 'premium_30d')
+    const annual = data.plans.find((p) => p.slug === 'premium_365d')
+    assert(monthly && monthly.priceUsd === 100 && monthly.durationDays === 30, 'Monthly plan must be $100 / 30d')
+    assert(annual && annual.priceUsd === 800 && annual.durationDays === 365, 'Annual plan must be $800 / 365d')
+  })
+
+  await test('POST /api/admin/subscriptions/activate rejects invalid duration and empty reference', async () => {
+    const badDays = await fetch(`${BASE_URL}/api/admin/subscriptions/activate`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${adminToken}`,
+      },
+      body: JSON.stringify({ userId: memberUserId, days: -5, reference: 'REF' }),
+    })
+    assert(badDays.status === 400, `Expected status 400 for negative days, got ${badDays.status}`)
+
+    const missingRef = await fetch(`${BASE_URL}/api/admin/subscriptions/activate`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${adminToken}`,
+      },
+      body: JSON.stringify({ userId: memberUserId, days: 30, reference: '   ' }),
+    })
+    assert(missingRef.status === 400, `Expected status 400 for empty reference, got ${missingRef.status}`)
+  })
+
+  await test('POST /api/admin/subscriptions/activate grants 30-Day VIP without leaking secrets', async () => {
     const res = await fetch(`${BASE_URL}/api/admin/subscriptions/activate`, {
       method: 'POST',
       headers: {
@@ -125,6 +158,8 @@ async function runTests() {
     const data = await res.json()
     assert(data.success === true, 'Activation should succeed')
     assert(data.user.membershipStatus === 'PREMIUM', 'User should now be PREMIUM')
+    assert(data.user.passwordHash === undefined && data.user.salt === undefined, 'Credentials must not be leaked')
+    assert(data.subscription.amountUsd === 100 && data.subscription.currency === 'USD', 'Subscription amount must be $100 USD')
   })
 
   // 6. Server-Side Unmasking for Upgraded Premium Member
@@ -180,7 +215,7 @@ async function runTests() {
     assert(res.status === 400, `Expected status 400, got ${res.status}`)
   })
 
-  // 8. TradingView Webhook Valid Ingestion
+  // 8. TradingView Webhook Valid Ingestion (including slash pair normalization)
   await test('POST /api/webhooks/tradingview ingests valid alert and returns 201 Created', async () => {
     const timestamp = new Date().toISOString()
     const res = await fetch(`${BASE_URL}/api/webhooks/tradingview`, {
@@ -188,7 +223,7 @@ async function runTests() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         secret: 'change-me',
-        pair: 'XAUUSD',
+        pair: 'XAU/USD',
         signal: 'BUY',
         timeframe: '15m',
         entry: 2688.0,
@@ -203,6 +238,7 @@ async function runTests() {
     const data = await res.json()
     assert(data.accepted === true, 'Signal must be accepted')
     assert(data.duplicate === false, 'New signal must not be duplicate')
+    assert(data.signal.pair === 'XAUUSD', 'Slash pair should normalize to XAUUSD')
     assert(data.id, 'Idempotent ID should be assigned')
     createdSignalId = data.id
   })

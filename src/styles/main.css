@@ -156,6 +156,8 @@ button, input, select {
 }
 
 .po-ticker-item {
+  background: transparent;
+  border: none;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -408,6 +410,35 @@ button, input, select {
   border-color: rgba(255, 255, 255, 0.15);
 }
 
+.po-user-pill {
+  background: var(--po-bg-surface);
+  border: 1px solid var(--po-border);
+  color: var(--po-text-primary);
+  height: 38px;
+  padding: 0 12px;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s;
+  white-space: nowrap;
+}
+
+.po-user-pill:hover {
+  background: var(--po-bg-elevated);
+  border-color: var(--po-cyan);
+  color: var(--po-text-white);
+}
+
+.po-user-pill.signed-in {
+  border-color: rgba(0, 230, 118, 0.4);
+  background: var(--po-green-bg);
+  color: var(--po-green);
+}
+
 /* ==============================================================================
    MAIN TRADING WORKSPACE (TERMINAL VIEWPORT)
    Split: Left Chart + Right Pocket Option Order Panel
@@ -435,14 +466,16 @@ button, input, select {
 }
 
 .po-chart-toolbar {
-  height: 54px;
+  min-height: 54px;
+  height: auto;
   background: var(--po-bg-main);
   border-bottom: 1px solid var(--po-border);
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  padding: 0 18px;
-  gap: 14px;
+  padding: 8px 18px;
+  gap: 10px 14px;
 }
 
 .po-market-title {
@@ -1074,6 +1107,10 @@ button, input, select {
   font-family: var(--font-mono);
 }
 
+.po-card-prices.five-col {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
 .po-price-col {
   display: flex;
   flex-direction: column;
@@ -1096,6 +1133,7 @@ button, input, select {
 .po-price-number.sl { color: var(--po-red); }
 .po-price-number.tp1 { color: var(--po-green); }
 .po-price-number.tp3 { color: var(--po-gold); }
+.po-price-number.vip { color: var(--po-gold); font-size: 11px; }
 
 /* Card Milestones Progress Track */
 .po-card-milestones {
@@ -1103,7 +1141,28 @@ button, input, select {
   align-items: center;
   justify-content: space-between;
   position: relative;
-  padding: 4px 0;
+  padding: 4px 8px;
+}
+
+.po-milestone-track {
+  position: absolute;
+  left: 20px;
+  right: 20px;
+  top: 10px;
+  height: 2px;
+  background: var(--po-border);
+  z-index: 1;
+}
+
+.po-milestone-track-fill {
+  height: 100%;
+  background: var(--po-green);
+  transition: width 0.25s ease;
+}
+
+.po-milestone-track-fill.sl {
+  background: var(--po-red);
+  width: 100% !important;
 }
 
 .po-milestone-node {
@@ -1631,11 +1690,329 @@ button, input, select {
   margin: 0 0 10px;
 }
 
+/* Status Pills, Paper Trade Controls & Admin Console */
+.po-preset-pills {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+}
+
+.po-preset-btn {
+  background: var(--po-bg-main);
+  border: 1px solid var(--po-border);
+  color: var(--po-text-secondary);
+  border-radius: 6px;
+  padding: 5px 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.po-preset-btn:hover {
+  border-color: var(--po-cyan);
+  color: var(--po-text-white);
+}
+
+.po-preset-btn.active {
+  background: var(--po-cyan-bg);
+  border-color: var(--po-cyan);
+  color: var(--po-cyan);
+}
+
+.po-paper-log {
+  background: var(--po-bg-main);
+  border: 1px solid var(--po-border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.po-paper-log-head {
+  display: flex;
+  justify-content: space-between;
+  font-size: 9.5px;
+  font-weight: 800;
+  color: var(--po-text-muted);
+  letter-spacing: 0.6px;
+}
+
+.po-paper-log-row {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--po-text-secondary);
+}
+
+.po-paper-log-row strong.bull { color: var(--po-green); }
+.po-paper-log-row strong.bear { color: var(--po-red); }
+
+.po-target-bar-fill.sl {
+  background: var(--po-red);
+}
+
+.po-status-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 800;
+  background: var(--po-bg-elevated);
+  color: var(--po-text-secondary);
+  border: 1px solid var(--po-border);
+}
+
+.po-status-pill.active,
+.po-status-pill.pending {
+  background: var(--po-cyan-bg);
+  color: var(--po-cyan);
+  border-color: rgba(0, 212, 255, 0.35);
+}
+
+.po-status-pill.tp1_hit,
+.po-status-pill.tp2_hit,
+.po-status-pill.sent {
+  background: var(--po-green-bg);
+  color: var(--po-green);
+  border-color: rgba(0, 230, 118, 0.35);
+}
+
+.po-status-pill.tp3_hit {
+  background: var(--po-gold-bg);
+  color: var(--po-gold);
+  border-color: rgba(255, 179, 0, 0.4);
+}
+
+.po-status-pill.sl_hit,
+.po-status-pill.failed {
+  background: var(--po-red-bg);
+  color: var(--po-red);
+  border-color: rgba(255, 51, 88, 0.35);
+}
+
+.po-status-pill.closed,
+.po-status-pill.cancelled,
+.po-status-pill.unconfigured {
+  background: var(--po-bg-elevated);
+  color: var(--po-text-secondary);
+}
+
+.po-card-pnl.neutral {
+  color: var(--po-text-muted);
+}
+
+.po-card-action-btn {
+  background: var(--po-bg-elevated);
+  border: 1px solid var(--po-border);
+  color: var(--po-text-primary);
+  padding: 4px 9px;
+  border-radius: 5px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.po-card-action-btn:hover {
+  border-color: var(--po-cyan);
+  color: var(--po-cyan);
+}
+
+.po-plan-tagline {
+  font-size: 12.5px;
+  color: var(--po-text-secondary);
+  margin: -8px 0 0;
+  line-height: 1.45;
+}
+
+.po-vip-summary-box {
+  background: var(--po-bg-main);
+  padding: 16px;
+  border-radius: 10px;
+  border: 1px solid var(--po-border);
+  margin-bottom: 16px;
+}
+
+.po-vip-steps {
+  margin: 0;
+  padding-left: 0;
+  list-style: none;
+  font-size: 12px;
+  color: var(--po-text-secondary);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  line-height: 1.45;
+}
+
+.po-vip-channels {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Admin Console Dark Styling */
+.po-admin-modal {
+  max-width: 760px;
+}
+
+.po-admin-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 1.2px;
+  color: var(--po-cyan);
+  margin-bottom: 6px;
+}
+
+.po-admin-tabs {
+  margin-bottom: 18px;
+  flex-wrap: wrap;
+}
+
+.po-admin-form {
+  display: flex;
+  flex-direction: column;
+}
+
+.po-admin-grid-2 {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.po-admin-grid-3 {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.po-admin-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--po-text-secondary);
+  margin-bottom: 12px;
+  cursor: pointer;
+}
+
+.po-admin-note {
+  margin-top: 10px;
+  font-size: 11px;
+  color: var(--po-text-muted);
+}
+
+.po-admin-notice {
+  font-size: 12px;
+  color: var(--po-text-secondary);
+  margin: 0 0 8px;
+}
+
+.po-admin-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 400px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.po-admin-row {
+  background: var(--po-bg-main);
+  border: 1px solid var(--po-border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.po-admin-row-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.po-admin-row-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.po-admin-row-sub {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--po-text-muted);
+}
+
+.po-admin-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.po-admin-action-btn {
+  border-radius: 5px;
+  padding: 4px 9px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 800;
+  cursor: pointer;
+  border: 1px solid var(--po-border);
+  background: var(--po-bg-elevated);
+  color: var(--po-text-primary);
+  transition: all 0.15s;
+}
+
+.po-admin-action-btn.tp {
+  background: var(--po-green-bg);
+  color: var(--po-green);
+  border-color: rgba(0, 230, 118, 0.35);
+}
+
+.po-admin-action-btn.gold {
+  background: var(--po-gold-bg);
+  color: var(--po-gold);
+  border-color: rgba(255, 179, 0, 0.4);
+}
+
+.po-admin-action-btn.sl {
+  background: var(--po-red-bg);
+  color: var(--po-red);
+  border-color: rgba(255, 51, 88, 0.35);
+}
+
+.po-admin-action-btn.close {
+  background: var(--po-cyan-bg);
+  color: var(--po-cyan);
+  border-color: rgba(0, 212, 255, 0.35);
+}
+
+.po-admin-action-btn:hover {
+  filter: brightness(1.15);
+}
+
 button:focus-visible,
 a:focus-visible,
-input:focus-visible {
+input:focus-visible,
+select:focus-visible {
   outline: 2px solid var(--po-cyan);
   outline-offset: 3px;
+}
+
+select.po-form-input option {
+  background: var(--po-bg-main);
+  color: var(--po-text-white);
 }
 
 /* ==============================================================================
@@ -1733,8 +2110,14 @@ input:focus-visible {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .po-card-prices {
+  .po-card-prices,
+  .po-card-prices.five-col {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .po-admin-grid-2,
+  .po-admin-grid-3 {
+    grid-template-columns: 1fr;
   }
 
   .po-code-box {

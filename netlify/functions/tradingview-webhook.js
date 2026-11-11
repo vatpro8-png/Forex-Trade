@@ -1,55 +1,46 @@
 // Netlify Serverless Function: forward TradingView alerts to the durable API
 // Endpoint: POST /api/webhooks/tradingview (via netlify.toml redirect)
+import {
+  decodeEventBody,
+  forwardRequest,
+  getBackendUrl,
+  jsonResponse,
+  pickHeaders,
+} from '../lib/proxy.js'
 
 export const handler = async (event) => {
   if (event.httpMethod !== 'POST') {
-    return {
-      statusCode: 405,
-      headers: { 'Content-Type': 'application/json', Allow: 'POST' },
-      body: JSON.stringify({ error: 'Method Not Allowed' }),
-    }
+    return jsonResponse(405, { error: 'Method Not Allowed' }, { Allow: 'POST' })
   }
 
-  const backendUrl = process.env.BACKEND_API_URL?.replace(/\/+$/, '')
+  const backendUrl = getBackendUrl()
   if (!backendUrl) {
-    return {
-      statusCode: 503,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ error: 'Signal backend is not configured.' }),
-    }
+    return jsonResponse(503, { error: 'Signal backend is not configured.' })
   }
 
+  const body = decodeEventBody(event) || '{}'
+  let parsed
   try {
-    const secretHeader = Object.entries(event.headers || {}).find(
-      ([name]) => name.toLowerCase() === 'x-sf-webhook-secret'
-    )?.[1]
-    const body = event.isBase64Encoded
-      ? Buffer.from(event.body || '', 'base64').toString('utf8')
-      : event.body || '{}'
-    JSON.parse(body)
+    parsed = JSON.parse(body)
+  } catch {
+    return jsonResponse(400, { error: 'Malformed JSON payload.' })
+  }
 
-    const response = await fetch(`${backendUrl}/api/webhooks/tradingview`, {
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return jsonResponse(400, { error: 'Webhook payload must be a JSON object.' })
+  }
+
+  const forwardedHeaders = pickHeaders(event.headers, ['x-sf-webhook-secret'])
+  return forwardRequest(
+    `${backendUrl}/api/webhooks/tradingview`,
+    {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        ...(secretHeader ? { 'X-SF-Webhook-Secret': secretHeader } : {}),
+        ...forwardedHeaders,
       },
       body,
-    })
-
-    return {
-      statusCode: response.status,
-      headers: { 'Content-Type': response.headers.get('content-type') || 'application/json' },
-      body: await response.text(),
-    }
-  } catch (error) {
-    return {
-      statusCode: error instanceof SyntaxError ? 400 : 502,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        error: error instanceof SyntaxError ? 'Malformed JSON payload.' : 'Signal backend is unavailable.',
-      }),
-    }
-  }
+    },
+    'Signal backend is unavailable.'
+  )
 }
-
