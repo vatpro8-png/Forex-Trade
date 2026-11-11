@@ -1,6 +1,13 @@
 // Netlify Serverless Function: TradingView Webhook Intake & Telegram Fan-Out
 // Endpoint: POST /api/webhooks/tradingview (via netlify.toml redirect)
 
+import { timingSafeEqual } from 'node:crypto'
+
+const matchesSecret = (received, configured) => {
+  if (typeof received !== 'string' || !received || received.length !== configured.length) return false
+  return timingSafeEqual(Buffer.from(received), Buffer.from(configured))
+}
+
 export const handler = async (event) => {
   // Only accept POST
   if (event.httpMethod !== 'POST') {
@@ -12,11 +19,33 @@ export const handler = async (event) => {
   }
 
   try {
-    const payload = JSON.parse(event.body || '{}')
-    const configuredSecret = process.env.SF_WEBHOOK_SECRET || 'change-me'
-    const receivedSecret = payload.secret || event.headers['x-sf-webhook-secret']
+    const configuredSecret = process.env.SF_WEBHOOK_SECRET
+    if (!configuredSecret || configuredSecret === 'change-me') {
+      return {
+        statusCode: 503,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ error: 'Webhook secret is not configured.' }),
+      }
+    }
 
-    if (receivedSecret !== configuredSecret && receivedSecret !== 'change-me') {
+    const rawBody = event.isBase64Encoded
+      ? Buffer.from(event.body || '', 'base64').toString('utf8')
+      : event.body || '{}'
+    const payload = JSON.parse(rawBody)
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      return {
+        statusCode: 400,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ error: 'Webhook payload must be a JSON object.' }),
+      }
+    }
+
+    const secretHeader = Object.entries(event.headers || {}).find(
+      ([name]) => name.toLowerCase() === 'x-sf-webhook-secret'
+    )?.[1]
+    const receivedSecret = payload.secret || secretHeader
+
+    if (!matchesSecret(receivedSecret, configuredSecret)) {
       return {
         statusCode: 401,
         headers: { 'Content-Type': 'application/json' },
@@ -27,7 +56,7 @@ export const handler = async (event) => {
     const pair = (payload.pair || payload.symbol || '').toUpperCase()
     const action = (payload.signal || payload.action || '').toUpperCase()
 
-    if (!pair || (action !== 'BUY' && action !== 'SELL')) {
+    if (!/^[A-Z0-9._:-]{3,30}$/.test(pair) || (action !== 'BUY' && action !== 'SELL')) {
       return {
         statusCode: 400,
         headers: { 'Content-Type': 'application/json' },
@@ -35,71 +64,44 @@ export const handler = async (event) => {
       }
     }
 
-    const id = `tv-${pair.toLowerCase()}-${Date.now().toString().slice(-6)}`
-    const signalTime = payload.time || new Date().toISOString()
+    const prices = ['entry', 'sl', 'tp1', 'tp2', 'tp3'].map((key) => Number(payload[key]))
+    const [entry, sl, tp1, tp2, tp3] = prices
+    const orderedLevels = action === 'BUY'
+      ? sl < entry && entry < tp1 && tp1 < tp2 && tp2 < tp3
+      : sl > entry && entry > tp1 && tp1 > tp2 && tp2 > tp3
 
-    const signalRecord = {
-      id,
-      pair,
-      direction: action,
-      timeframe: payload.timeframe || '15m',
-      entry: Number(payload.entry),
-      sl: Number(payload.sl),
-      tp1: Number(payload.tp1),
-      tp2: Number(payload.tp2),
-      tp3: Number(payload.tp3),
-      time: signalTime,
-      status: 'ACTIVE',
-      source: 'TradingView',
-    }
-
-    // Dispatch to Telegram Bot API if configured in Netlify environment variables
-    const tgToken = process.env.SF_TELEGRAM_BOT_TOKEN
-    const tgChatId = process.env.SF_TELEGRAM_CHAT_ID || '@sfcapitalfrx'
-
-    if (tgToken && tgChatId) {
-      const msg = `⚡ SF CAPITAL FX — NEW SIGNAL ⚡
-━━━━━━━━━━━━━━━━━━━━
-🎯 Pair: #${pair}
-📊 Direction: ${action} ${action === 'BUY' ? '🟢' : '🔴'}
-⏱ Timeframe: ${signalRecord.timeframe}
-📍 Entry: ${signalRecord.entry}
-🛑 Stop Loss: ${signalRecord.sl}
-
-🎯 TP 1: ${signalRecord.tp1}
-🎯 TP 2: ${signalRecord.tp2}
-🎯 TP 3: ${signalRecord.tp3}
-━━━━━━━━━━━━━━━━━━━━
-🔒 Risk: 1-2% max per trade
-📡 Source: SF CAPITAL FX Verified Engine
-🌐 Web Platform: https://sfcapitalfx.netlify.app`
-
-      try {
-        await fetch(`https://api.telegram.org/bot${tgToken}/sendMessage`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            chat_id: tgChatId,
-            text: msg,
-          }),
-        })
-      } catch (tgErr) {
-        console.error('Telegram dispatch error:', tgErr.message)
+    if (prices.some((price) => !Number.isFinite(price) || price <= 0) || !orderedLevels) {
+      return {
+        statusCode: 400,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ error: 'Entry, stop loss, and targets must be positive finite prices in directional order.' }),
       }
     }
 
+    const backendUrl = process.env.BACKEND_API_URL
+    if (!backendUrl) {
+      return {
+        statusCode: 503,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ error: 'Signals backend is not configured.' }),
+      }
+    }
+
+    const target = new URL('/api/webhooks/tradingview', backendUrl)
+    if (!['http:', 'https:'].includes(target.protocol)) throw new Error('Unsupported backend protocol')
+
+    const backendHeaders = { 'Content-Type': 'application/json' }
+    if (secretHeader) backendHeaders['x-sf-webhook-secret'] = secretHeader
+    const response = await fetch(target, {
+      method: 'POST',
+      headers: backendHeaders,
+      body: rawBody,
+    })
+
     return {
-      statusCode: 201,
-      headers: {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*',
-      },
-      body: JSON.stringify({
-        accepted: true,
-        duplicate: false,
-        id,
-        signal: signalRecord,
-      }),
+      statusCode: response.status,
+      headers: { 'Content-Type': response.headers.get('content-type') || 'application/json' },
+      body: await response.text(),
     }
   } catch (err) {
     return {

@@ -1,67 +1,46 @@
-// Netlify Serverless Function: Signals Provider
+// Netlify Serverless Function: Signals API proxy
 // Endpoint: GET /api/signals
 
 export const handler = async (event) => {
-  // Demo / Initial Verified Signals
-  const defaultSignals = [
-    {
-      id: 'tv-xauusd-20261109-01',
-      pair: 'XAUUSD',
-      direction: 'BUY',
-      timeframe: '15m',
-      entry: 2682.5,
-      sl: 2671.0,
-      tp1: 2692.0,
-      tp2: 2704.0,
-      tp3: 2718.0,
-      time: new Date(Date.now() - 1000 * 60 * 35).toISOString(),
-      status: 'TP1_HIT',
-      source: 'TradingView',
-      pnlPips: 95,
-      isPremiumOnly: false,
-    },
-    {
-      id: 'tv-btcusd-20261109-02',
-      pair: 'BTCUSD',
-      direction: 'BUY',
-      timeframe: '1h',
-      entry: 88150.0,
-      sl: 86900.0,
-      tp1: 89400.0,
-      tp2: 90800.0,
-      tp3: 92500.0,
-      time: new Date(Date.now() - 1000 * 60 * 120).toISOString(),
-      status: 'ACTIVE',
-      source: 'TradingView',
-      pnlPips: 300,
-      isPremiumOnly: true,
-    },
-    {
-      id: 'tv-usoil-20261109-03',
-      pair: 'USOIL',
-      direction: 'SELL',
-      timeframe: '30m',
-      entry: 71.4,
-      sl: 72.25,
-      tp1: 70.6,
-      tp2: 69.8,
-      tp3: 68.9,
-      time: new Date(Date.now() - 1000 * 60 * 210).toISOString(),
-      status: 'TP2_HIT',
-      source: 'TradingView',
-      pnlPips: 160,
-      isPremiumOnly: false,
-    },
-  ]
+  if (event.httpMethod !== 'GET') {
+    return {
+      statusCode: 405,
+      headers: { 'Content-Type': 'application/json', Allow: 'GET' },
+      body: JSON.stringify({ error: 'Method Not Allowed' }),
+    }
+  }
 
-  return {
-    statusCode: 200,
-    headers: {
-      'Content-Type': 'application/json',
-      'Access-Control-Allow-Origin': '*',
-      'Cache-Control': 'public, max-age=15, s-maxage=30',
-    },
-    body: JSON.stringify(defaultSignals),
+  const backendUrl = process.env.BACKEND_API_URL
+  if (!backendUrl) {
+    return {
+      statusCode: 503,
+      headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+      body: JSON.stringify({ error: 'Signals backend is not configured.' }),
+    }
+  }
+
+  try {
+    const target = new URL('/api/signals', backendUrl)
+    if (!['http:', 'https:'].includes(target.protocol)) throw new Error('Unsupported backend protocol')
+
+    const headers = {}
+    if (event.headers?.authorization) headers.Authorization = event.headers.authorization
+    const response = await fetch(target, { headers })
+
+    return {
+      statusCode: response.status,
+      headers: {
+        'Content-Type': response.headers.get('content-type') || 'application/json',
+        'Cache-Control': 'no-store',
+      },
+      body: await response.text(),
+    }
+  } catch (error) {
+    console.error('Signals backend request failed:', error.message)
+    return {
+      statusCode: 502,
+      headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+      body: JSON.stringify({ error: 'Signals backend is unavailable.' }),
+    }
   }
 }
-

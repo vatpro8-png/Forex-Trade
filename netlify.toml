@@ -12,8 +12,9 @@
 [build.environment]
   NODE_VERSION = "20"
   CI = "false"
-  # Set your live backend API URL in Netlify UI or here:
+  # Required for production signals and webhook forwarding:
   # BACKEND_API_URL = "https://api.sfcapitalfx.com"
+  # SF_WEBHOOK_SECRET must match the TradingView alert input and backend secret.
 
 # ------------------------------------------------------------------------------
 # Production Context

@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import type { Signal, SignalStatus, User } from '../model/types'
 import { MARKETS } from '../model/symbols'
 
@@ -31,8 +31,22 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
   const [tp1, setTp1] = useState('2696.00')
   const [tp2, setTp2] = useState('2708.00')
   const [tp3, setTp3] = useState('2722.00')
-  const [secret, setSecret] = useState('sf-capital-fx-webhook-secret-key-2026')
+  const [secret, setSecret] = useState('')
   const [isSimulating, setIsSimulating] = useState(false)
+
+  useEffect(() => {
+    const market = MARKETS.find((item) => item.symbol === selectedPair)
+    if (!market) return
+
+    const entry = market.price
+    const stopMultiplier = direction === 'BUY' ? 0.995 : 1.005
+    const targetMultipliers = direction === 'BUY' ? [1.005, 1.01, 1.018] : [0.995, 0.99, 0.982]
+    setEntryPrice(entry.toFixed(market.digits))
+    setStopLoss((entry * stopMultiplier).toFixed(market.digits))
+    setTp1((entry * targetMultipliers[0]).toFixed(market.digits))
+    setTp2((entry * targetMultipliers[1]).toFixed(market.digits))
+    setTp3((entry * targetMultipliers[2]).toFixed(market.digits))
+  }, [selectedPair, direction])
 
   const handleSimulateWebhook = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -52,35 +66,19 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
     }
 
     try {
-      // First attempt to call the actual C++ backend if reachable
-      await fetch('/api/webhooks/tradingview', {
+      const response = await fetch('/api/webhooks/tradingview', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
-      }).catch(() => null)
+      })
+      const result = await response.json()
+      if (!response.ok) throw new Error(result.error || 'Webhook request failed.')
+      if (!result.signal) throw new Error('Backend response did not include a stored signal.')
 
-      const id = `tv-${selectedPair.toLowerCase()}-${Date.now().toString().slice(-6)}`
-      const newSignal: Signal = {
-        id,
-        pair: selectedPair,
-        direction,
-        entry: payload.entry,
-        sl: payload.sl,
-        tp1: payload.tp1,
-        tp2: payload.tp2,
-        tp3: payload.tp3,
-        status: 'ACTIVE',
-        time: payload.time,
-        timeframe: '15m',
-        source: 'TradingView',
-        isPremiumOnly: false,
-        milestones: [{ milestone: 'CREATED', time: payload.time }],
-      }
-
-      onAddSignal(newSignal)
-      onToast(`Webhook accepted: ${selectedPair} ${direction} signal created!`)
-    } catch {
-      onToast('Error simulating webhook')
+      onAddSignal(result.signal as Signal)
+      onToast(`Backend accepted ${selectedPair} ${direction}.`)
+    } catch (error) {
+      onToast(error instanceof Error ? error.message : 'Webhook request failed.')
     } finally {
       setIsSimulating(false)
     }
@@ -95,7 +93,7 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
         <div className="eyebrow">SF CAPITAL FX ADMIN CONSOLE</div>
         <h2>Platform Operations & Signal Dispatch</h2>
         <p className="modal-subtitle">
-          Manage live TradingView alerts, milestone transitions, Telegram delivery queues, and 30-day VIP memberships.
+          Send test alerts to the configured API and review local signal and membership controls.
         </p>
 
         <div className="auth-tabs" style={{ marginBottom: 20 }}>
@@ -134,14 +132,6 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
                   value={selectedPair}
                   onChange={(e) => {
                     setSelectedPair(e.target.value)
-                    const m = MARKETS.find((item) => item.symbol === e.target.value)
-                    if (m) {
-                      setEntryPrice(m.price.toString())
-                      setStopLoss((m.price * 0.995).toFixed(m.digits))
-                      setTp1((m.price * 1.005).toFixed(m.digits))
-                      setTp2((m.price * 1.01).toFixed(m.digits))
-                      setTp3((m.price * 1.018).toFixed(m.digits))
-                    }
                   }}
                 >
                   {MARKETS.map((m) => (
@@ -221,9 +211,9 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
             </div>
 
             <label>
-              Webhook Secret (Signed Token)
+              Webhook Secret
               <input
-                type="text"
+                type="password"
                 value={secret}
                 onChange={(e) => setSecret(e.target.value)}
                 required

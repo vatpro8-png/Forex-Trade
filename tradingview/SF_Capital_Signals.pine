@@ -4,12 +4,12 @@ indicator("SF CAPITAL FX — Structured Signals Engine", overlay=true, precision
 // ==============================================================================
 // SF CAPITAL FX — Pine Script v5 Strategy & Alert Generator
 // Pairs: XAUUSD, BTCUSD, USOIL, and Major Forex Pairs
-// Target: https://sfcapitalsf.netlify.app/api/webhooks/tradingview
+// Target: https://sfcapitalfx.netlify.app/api/webhooks/tradingview
 // ==============================================================================
 
 // --- User Inputs ---
 var string G_SECRET = "Security & Webhook Settings"
-webhookSecret = input.string("sf-capital-fx-production-secret-2026-key", "Webhook Secret Key", group=G_SECRET)
+webhookSecret = input.string("", "Webhook Secret Key", group=G_SECRET)
 
 var string G_STRAT = "Strategy Parameters"
 emaFastLength = input.int(20, "Fast EMA Length", minval=1, group=G_STRAT)
@@ -39,8 +39,8 @@ var float tp3Price = na
 var string activeDirection = ""
 
 // Signal Triggers
-buySignal = bullishConfluence and (na(activeDirection) or activeDirection != "BUY")
-sellSignal = bearishConfluence and (na(activeDirection) or activeDirection != "SELL")
+buySignal = barstate.isconfirmed and bullishConfluence and activeDirection != "BUY"
+sellSignal = barstate.isconfirmed and bearishConfluence and activeDirection != "SELL"
 
 if buySignal
     entryPrice := close
@@ -67,11 +67,10 @@ plot(emaSlow, "Slow EMA (50)", color=color.new(#c38d35, 0), linewidth=2)
 plotshape(buySignal, title="BUY Alert", location=location.belowbar, color=#11a879, style=shape.triangleup, size=size.small, text="SF BUY")
 plotshape(sellSignal, title="SELL Alert", location=location.abovebar, color=#d9534f, style=shape.triangledown, size=size.small, text="SF SELL")
 
-// --- Alert Payload Strings ---
-buyAlertJson = '{"secret":"' + webhookSecret + '","pair":"' + syminfo.ticker + '","signal":"BUY","timeframe":"' + timeframe.period + '","entry":' + str.tostring(entryPrice, "#.##") + ',"sl":' + str.tostring(stopLossPrice, "#.##") + ',"tp1":' + str.tostring(tp1Price, "#.##") + ',"tp2":' + str.tostring(tp2Price, "#.##") + ',"tp3":' + str.tostring(tp3Price, "#.##") + ',"time":"' + str.format_time(time, "yyyy-MM-dd'T'HH:mm:ss'Z'") + '"}'
-sellAlertJson = '{"secret":"' + webhookSecret + '","pair":"' + syminfo.ticker + '","signal":"SELL","timeframe":"' + timeframe.period + '","entry":' + str.tostring(entryPrice, "#.##") + ',"sl":' + str.tostring(stopLossPrice, "#.##") + ',"tp1":' + str.tostring(tp1Price, "#.##") + ',"tp2":' + str.tostring(tp2Price, "#.##") + ',"tp3":' + str.tostring(tp3Price, "#.##") + ',"time":"' + str.format_time(time, "yyyy-MM-dd'T'HH:mm:ss'Z'") + '"}'
+// alertcondition() requires a constant message; alert() supports this runtime JSON.
+buildAlertJson(string direction) =>
+    '{"secret":"' + webhookSecret + '","pair":"' + syminfo.ticker + '","signal":"' + direction + '","timeframe":"' + timeframe.period + '","entry":' + str.tostring(entryPrice, format.mintick) + ',"sl":' + str.tostring(stopLossPrice, format.mintick) + ',"tp1":' + str.tostring(tp1Price, format.mintick) + ',"tp2":' + str.tostring(tp2Price, format.mintick) + ',"tp3":' + str.tostring(tp3Price, format.mintick) + ',"time":"' + str.format_time(time_close, "yyyy-MM-dd'T'HH:mm:ss'Z'", "UTC") + '"}'
 
-// Register TradingView Alert conditions
-alertcondition(buySignal, title="SF CAPITAL BUY Alert", message=buyAlertJson)
-alertcondition(sellSignal, title="SF CAPITAL SELL Alert", message=sellAlertJson)
+if (buySignal or sellSignal) and str.length(webhookSecret) > 0
+    alert(buildAlertJson(activeDirection), alert.freq_once_per_bar_close)
 

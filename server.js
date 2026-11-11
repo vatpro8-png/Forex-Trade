@@ -6,10 +6,17 @@ import { fileURLToPath } from 'node:url'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const PORT = process.env.SF_PORT || 8080
-const WEBHOOK_SECRET = process.env.SF_WEBHOOK_SECRET || 'change-me'
+const WEBHOOK_SECRET = process.env.SF_WEBHOOK_SECRET || ''
 const JWT_SECRET = process.env.SF_JWT_SECRET || 'sf-capital-fx-super-jwt-secret-key-2026'
 const TG_TOKEN = process.env.SF_TELEGRAM_BOT_TOKEN || ''
 const TG_CHAT_ID = process.env.SF_TELEGRAM_CHAT_ID || ''
+
+function matchesWebhookSecret(received) {
+  if (typeof received !== 'string' || !received || !WEBHOOK_SECRET || WEBHOOK_SECRET === 'change-me') return false
+  const receivedBytes = Buffer.from(received)
+  const expectedBytes = Buffer.from(WEBHOOK_SECRET)
+  return receivedBytes.length === expectedBytes.length && crypto.timingSafeEqual(receivedBytes, expectedBytes)
+}
 
 // Data Paths
 const DATA_DIR = path.join(__dirname, 'data')
@@ -480,29 +487,53 @@ const server = http.createServer((req, res) => {
   // 4. TradingView Ingestion Webhook Endpoint
   if (req.method === 'POST' && url.pathname === '/api/webhooks/tradingview') {
     readBody((err, payload) => {
-      if (err) {
+      if (err || !payload || typeof payload !== 'object' || Array.isArray(payload)) {
         res.writeHead(400, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ error: 'Invalid JSON payload' }))
+        res.end(JSON.stringify({ error: 'Webhook payload must be a JSON object.' }))
+        return
+      }
+
+      if (!WEBHOOK_SECRET || WEBHOOK_SECRET === 'change-me') {
+        res.writeHead(503, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Webhook secret is not configured.' }))
         return
       }
 
       const secret = payload.secret || req.headers['x-sf-webhook-secret']
-      if (secret !== WEBHOOK_SECRET && secret !== 'change-me') {
+      if (!matchesWebhookSecret(secret)) {
         res.writeHead(401, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ error: 'Invalid webhook secret token' }))
         return
       }
 
-      const pair = (payload.pair || payload.symbol || '').toUpperCase()
-      const action = (payload.signal || payload.action || '').toUpperCase()
+      const pair = String(payload.pair || payload.symbol || '').toUpperCase()
+      const action = String(payload.signal || payload.action || '').toUpperCase()
 
-      if (!pair || (action !== 'BUY' && action !== 'SELL')) {
+      if (!/^[A-Z0-9._:-]{3,30}$/.test(pair) || (action !== 'BUY' && action !== 'SELL')) {
         res.writeHead(400, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ error: 'Instrument pair and action (BUY/SELL) are required.' }))
         return
       }
 
-      const signalTime = payload.time || new Date().toISOString()
+      const prices = ['entry', 'sl', 'tp1', 'tp2', 'tp3'].map((key) => Number(payload[key]))
+      const [entry, sl, tp1, tp2, tp3] = prices
+      const orderedLevels = action === 'BUY'
+        ? sl < entry && entry < tp1 && tp1 < tp2 && tp2 < tp3
+        : sl > entry && entry > tp1 && tp1 > tp2 && tp2 > tp3
+
+      if (prices.some((price) => !Number.isFinite(price) || price <= 0) || !orderedLevels) {
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Entry, stop loss, and targets must be positive finite prices in directional order.' }))
+        return
+      }
+
+      const signalDate = payload.time ? new Date(payload.time) : new Date()
+      if (Number.isNaN(signalDate.getTime())) {
+        res.writeHead(400, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Signal time must be a valid timestamp.' }))
+        return
+      }
+      const signalTime = signalDate.toISOString()
       const id = `tv-${pair.toLowerCase()}-${Date.now().toString().slice(-6)}`
 
       // Deduplication check
@@ -518,11 +549,11 @@ const server = http.createServer((req, res) => {
         pair,
         direction: action,
         timeframe: payload.timeframe || '15m',
-        entry: Number(payload.entry),
-        sl: Number(payload.sl),
-        tp1: Number(payload.tp1),
-        tp2: Number(payload.tp2),
-        tp3: Number(payload.tp3),
+        entry,
+        sl,
+        tp1,
+        tp2,
+        tp3,
         time: signalTime,
         status: 'ACTIVE',
         source: 'TradingView',

@@ -30,7 +30,7 @@ export const TradingChart: React.FC<TradingChartProps> = ({
       layout: {
         background: { type: ColorType.Solid, color: '#0b1118' },
         textColor: '#7e93a8',
-        fontFamily: "'Inter', sans-serif",
+        fontFamily: "'IBM Plex Sans', sans-serif",
       },
       grid: {
         vertLines: { color: 'rgba(255, 255, 255, 0.03)' },
@@ -68,7 +68,7 @@ export const TradingChart: React.FC<TradingChartProps> = ({
     chartRef.current = chart
     candlestickSeriesRef.current = candlestickSeries
 
-    // Generate realistic historical candle data
+    // Generate synthetic candles for the demo chart.
     const basePrice = market.price
     const count = 80
     const nowSec = Math.floor(Date.now() / 1000)
@@ -152,7 +152,7 @@ export const TradingChart: React.FC<TradingChartProps> = ({
 
     chart.timeScale().fitContent()
 
-    // Live tick pulsation simulating live Pocket Option streaming price updates
+    // Continue the demo price path so chart interactions remain visible.
     const lastCandle = { ...data[data.length - 1] }
     const tickInterval = setInterval(() => {
       if (!candlestickSeriesRef.current) return
@@ -192,10 +192,10 @@ export const TradingChart: React.FC<TradingChartProps> = ({
           <span className={`po-asset-badge ${market.iconClass}`}>{market.iconText}</span>
           <div className="po-asset-info">
             <span className="po-asset-name">{market.symbol}</span>
-            <span className="po-asset-payout">Payout: 94%</span>
+            <span className="po-asset-payout">Synthetic chart · not a broker feed</span>
           </div>
           <div className={`po-live-price-pill ${priceDirection === 'UP' ? 'bull' : 'bear'}`}>
-            <span className="po-pulse-dot"></span>
+            <span className="po-price-mode">SIM</span>
             <span className="po-price-val">{livePrice.toFixed(market.digits)}</span>
             <span className="po-price-arrow">{priceDirection === 'UP' ? '▲' : '▼'}</span>
           </div>
@@ -235,14 +235,14 @@ export const TradingChart: React.FC<TradingChartProps> = ({
       <div className="po-chart-statusbar">
         <div className="po-feed-status">
           <span className="po-status-dot online"></span>
-          <span>Feed: Real-time TradingView Webhook Engine</span>
+          <span>Generated demo candles · no live market data</span>
         </div>
         <div className="po-spread-info">
-          <span>Spread: 0.1 pips</span>
+          <span>Spread: unavailable</span>
           <span>·</span>
-          <span>Leverage: 1:500</span>
+          <span>Leverage: not connected</span>
           <span>·</span>
-          <span>Execution: Market (Ultra-fast)</span>
+          <span>Execution: unavailable</span>
         </div>
       </div>
     </div>
