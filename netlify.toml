@@ -12,9 +12,8 @@
 [build.environment]
   NODE_VERSION = "20"
   CI = "false"
-  # Required for production signals and webhook forwarding:
+  # Set your live backend API URL in Netlify UI or here:
   # BACKEND_API_URL = "https://api.sfcapitalfx.com"
-  # SF_WEBHOOK_SECRET must match the TradingView alert input and backend secret.
 
 # ------------------------------------------------------------------------------
 # Production Context
@@ -53,6 +52,12 @@
   to = "/.netlify/functions/signals"
   status = 200
   force = false
+
+[[redirects]]
+  from = "/api/*"
+  to = "/.netlify/functions/backend/:splat"
+  status = 200
+  force = true
 
 # 2. Proxy to Dedicated C++ / Node Backend (Optional: uncomment when hosting separate API)
 # [[redirects]]

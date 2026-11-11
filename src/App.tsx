@@ -13,19 +13,21 @@ export const App: React.FC = () => {
   const demoBalance = 10000.0
   const [tradeAmount, setTradeAmount] = useState<number>(100)
   const [livePrice, setLivePrice] = useState<number>(2686.5)
-  const [authToken, setAuthToken] = useState<string | null>(() => window.localStorage.getItem('sf-session-token'))
+  const webhookUrl = `${window.location.origin}/api/webhooks/tradingview`
+
   const [user, setUser] = useState<User | null>(null)
 
   const [activeModal, setActiveModal] = useState<'auth' | 'vip' | 'admin' | null>(null)
   const [toastMessage, setToastMessage] = useState<string | null>(null)
   const [isLiveConnected, setIsLiveConnected] = useState(false)
-  const [authMode, setAuthMode] = useState<'login' | 'register'>('login')
-  const [authError, setAuthError] = useState<string | null>(null)
 
   // Auth inputs
   const [authEmail, setAuthEmail] = useState('')
   const [authPassword, setAuthPassword] = useState('')
   const [authName, setAuthName] = useState('')
+  const [authMode, setAuthMode] = useState<'login' | 'register'>('login')
+  const [authError, setAuthError] = useState<string | null>(null)
+  const [isAuthenticating, setIsAuthenticating] = useState(false)
 
   const showToast = (message: string) => {
     setToastMessage(message)
@@ -37,11 +39,13 @@ export const App: React.FC = () => {
   // Fetch live signals from API
   const fetchSignals = async () => {
     try {
-      const headers = authToken ? { Authorization: `Bearer ${authToken}` } : undefined
-      const response = await fetch('/api/signals', { headers })
+      const token = localStorage.getItem('sf-session-token')
+      const response = await fetch('/api/signals', {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      })
       if (response.ok) {
         const data = await response.json()
-        if (Array.isArray(data)) {
+        if (Array.isArray(data) && data.length > 0) {
           const mapped: Signal[] = data.map((item: any) => ({
             id: item.id,
             pair: item.pair,
@@ -56,7 +60,7 @@ export const App: React.FC = () => {
             timeframe: item.timeframe || '15m',
             source: 'TradingView',
             isPremiumOnly: Boolean(item.isPremiumOnly),
-            pnlPips: Number(item.pnlPips || 0),
+            pnlPips: Number.isFinite(Number(item.pnlPips)) ? Number(item.pnlPips) : undefined,
           }))
           setSignals(mapped)
           setIsLiveConnected(true)
@@ -70,36 +74,34 @@ export const App: React.FC = () => {
   }
 
   useEffect(() => {
-    fetchSignals()
-    const interval = setInterval(fetchSignals, 25000)
-    return () => clearInterval(interval)
-  }, [authToken])
+    const token = localStorage.getItem('sf-session-token')
+    if (!token) return
 
-  useEffect(() => {
-    if (!authToken) {
-      setUser(null)
-      return
-    }
-
-    let cancelled = false
-    fetch('/api/auth/me', { headers: { Authorization: `Bearer ${authToken}` } })
+    let isCurrent = true
+    fetch('/api/auth/me', { headers: { Authorization: `Bearer ${token}` } })
       .then(async (response) => {
         if (!response.ok) throw new Error('Session expired')
-        const data = await response.json()
-        if (!cancelled) setUser(data.user)
+        return response.json()
+      })
+      .then((data) => {
+        if (isCurrent) setUser(data.user)
       })
       .catch(() => {
-        window.localStorage.removeItem('sf-session-token')
-        if (!cancelled) {
-          setAuthToken(null)
-          setUser(null)
-        }
+        localStorage.removeItem('sf-session-token')
       })
 
     return () => {
-      cancelled = true
+      isCurrent = false
     }
-  }, [authToken])
+  }, [])
+
+  useEffect(() => {
+    fetchSignals()
+    const interval = setInterval(fetchSignals, 25000)
+    return () => {
+      clearInterval(interval)
+    }
+  }, [])
 
   // Market info
   const currentMarket = useMemo(() => {
@@ -108,17 +110,21 @@ export const App: React.FC = () => {
 
   // Featured signal for the selected market
   const activeSignal = useMemo(() => {
+    const accessibleSignals = signals.filter(
+      (signal) => !signal.isPremiumOnly || user?.membershipStatus === 'PREMIUM' || user?.role === 'admin'
+    )
     return (
-      signals.find(
+      accessibleSignals.find(
         (s) => s.pair === currentMarket.symbol && (s.status === 'ACTIVE' || s.status.includes('TP'))
       ) ||
-      signals.find((s) => s.pair === currentMarket.symbol) ||
+      accessibleSignals.find((s) => s.pair === currentMarket.symbol) ||
       null
     )
-  }, [signals, currentMarket])
-  const chartSignal = activeSignal?.isPremiumOnly && user?.membershipStatus !== 'PREMIUM'
-    ? null
-    : activeSignal
+  }, [signals, currentMarket, user])
+
+  const tp1RiskMultiple = activeSignal && activeSignal.entry !== activeSignal.sl
+    ? Math.abs(activeSignal.tp1 - activeSignal.entry) / Math.abs(activeSignal.entry - activeSignal.sl)
+    : null
 
   // Filtered signals for the matrix
   const filteredSignals = useMemo(() => {
@@ -133,22 +139,21 @@ export const App: React.FC = () => {
   // Performance analytics
   const stats = useMemo(() => {
     const closed = signals.filter((s) => s.status === 'CLOSED' || s.status === 'SL_HIT')
-    const wins = closed.filter((s) => (s.pnlPips || 0) > 0).length
-    const computedWinRate = closed.length > 0 ? Number(((wins / closed.length) * 100).toFixed(1)) : null
-    const totalPips = signals.reduce((acc, s) => acc + (s.pnlPips || 0), 0)
-    const winningPips = closed.reduce((acc, s) => acc + Math.max(s.pnlPips || 0, 0), 0)
-    const losingPips = closed.reduce((acc, s) => acc + Math.abs(Math.min(s.pnlPips || 0, 0)), 0)
+    const winningSignals = closed.filter((s) => (s.pnlPips || 0) > 0)
+    const losingSignals = closed.filter((s) => (s.pnlPips || 0) < 0)
+    const grossProfit = winningSignals.reduce((total, s) => total + (s.pnlPips || 0), 0)
+    const grossLoss = losingSignals.reduce((total, s) => total + Math.abs(s.pnlPips || 0), 0)
     return {
-      winRate: computedWinRate,
-      totalPips,
+      winRate: closed.length ? Number(((winningSignals.length / closed.length) * 100).toFixed(1)) : null,
+      totalPips: closed.reduce((total, s) => total + (s.pnlPips || 0), 0),
       totalTrades: closed.length,
-      profitFactor: losingPips > 0 ? (winningPips / losingPips).toFixed(2) : 'N/A',
+      profitFactor: grossLoss ? Number((grossProfit / grossLoss).toFixed(2)) : null,
     }
   }, [signals])
 
-  // Preview only; no broker is connected to this application.
-  const handleExecuteTrade = (direction: 'CALL' | 'PUT') => {
-    showToast(`Demo ${direction} preview for ${currentMarket.symbol} ($${tradeAmount}); no order was sent.`)
+  // The interface has no connected broker; this action never places a real order.
+  const handleExecuteTrade = (direction: 'BUY' | 'SELL') => {
+    showToast(`${direction} paper simulation only for ${currentMarket.symbol}; no broker is connected.`)
   }
 
   // Copy signal to clipboard
@@ -162,7 +167,7 @@ Stop Loss: ${s.sl}
 TP1: ${s.tp1} | TP2: ${s.tp2} | TP3: ${s.tp3}
 Status: ${s.status}
 Source: TradingView Webhook Engine
-https://sfcapitalfx.netlify.app`
+${window.location.origin}`
     const ok = await copyToClipboard(text)
     if (ok) showToast(`✓ Copied ${s.pair} ${s.direction} signal to clipboard!`)
   }
@@ -170,44 +175,42 @@ https://sfcapitalfx.netlify.app`
   const handleAuthSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setAuthError(null)
+    setIsAuthenticating(true)
     try {
-      const response = await fetch(`/api/auth/${authMode === 'login' ? 'login' : 'register'}`, {
+      const response = await fetch(`/api/auth/${authMode}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           email: authEmail,
           password: authPassword,
-          ...(authMode === 'register' ? { name: authName } : {}),
+          ...(authMode === 'register' && authName ? { name: authName } : {}),
         }),
       })
       const data = await response.json()
       if (!response.ok) throw new Error(data.error || 'Unable to authenticate.')
-
-      window.localStorage.setItem('sf-session-token', data.token)
-      setAuthToken(data.token)
+      localStorage.setItem('sf-session-token', data.token)
       setUser(data.user)
+      void fetchSignals()
+      setAuthPassword('')
       setActiveModal(null)
       showToast(`Signed in as ${data.user.email}`)
     } catch (error) {
       setAuthError(error instanceof Error ? error.message : 'Unable to authenticate.')
+    } finally {
+      setIsAuthenticating(false)
     }
   }
 
-  const handleAccountAction = () => {
-    if (authToken) {
-      window.localStorage.removeItem('sf-session-token')
-      setAuthToken(null)
-      setUser(null)
-      showToast('Signed out.')
-      return
-    }
-    setAuthMode('login')
-    setActiveModal('auth')
+  const handleLogout = () => {
+    localStorage.removeItem('sf-session-token')
+    setUser(null)
+    void fetchSignals()
+    setActiveModal(null)
+    showToast('Signed out')
   }
 
   return (
     <div className="po-platform">
-      {/* Toast Notification */}
       <div className={`po-toast ${toastMessage ? 'show' : ''}`}>
         <span>{toastMessage}</span>
       </div>
@@ -217,7 +220,7 @@ https://sfcapitalfx.netlify.app`
         <div className="po-ribbon-left">
           <div className="po-live-pulse-badge">
             <span className="po-pulse-dot"></span>
-            <span>DEMO MARKET DATA</span>
+            <span>REFERENCE MARKET DATA</span>
           </div>
           {MARKETS.map((m) => (
             <div
@@ -243,7 +246,7 @@ https://sfcapitalfx.netlify.app`
             <span>📱 Telegram: @sfcapitalfrx</span>
           </a>
           <span>·</span>
-          <span>Signals API: {isLiveConnected ? 'Connected' : 'Demo feed'}</span>
+          <span>Signal API: {isLiveConnected ? 'Connected · 25s refresh' : 'Offline · sample feed'}</span>
         </div>
       </div>
 
@@ -268,6 +271,9 @@ https://sfcapitalfx.netlify.app`
               onClick={() => setSelectedMarket(m.symbol)}
             >
               <span>{m.symbol}</span>
+              <span className="po-payout-badge">
+                {m.category}
+              </span>
             </button>
           ))}
         </div>
@@ -276,9 +282,7 @@ https://sfcapitalfx.netlify.app`
         <div className="po-header-right">
           <div className="po-balance-box">
             <div className="po-balance-info">
-              <span className="po-balance-type">
-                SIMULATED DEMO ACCOUNT
-              </span>
+              <span className="po-balance-type">DEMO SIMULATION</span>
               <span className="po-balance-amount">
                 ${demoBalance.toLocaleString('en-US', { minimumFractionDigits: 2 })}
               </span>
@@ -301,11 +305,10 @@ https://sfcapitalfx.netlify.app`
 
           <button
             className="po-btn-icon"
-            onClick={handleAccountAction}
-            title={authToken ? 'Sign out' : 'Sign in'}
-            aria-label={authToken ? 'Sign out' : 'Sign in'}
+            onClick={() => setActiveModal('auth')}
+            title="User Account"
           >
-            {authToken ? '↪' : '👤'}
+            👤
           </button>
         </div>
       </header>
@@ -315,7 +318,7 @@ https://sfcapitalfx.netlify.app`
         {/* Left: Full-Screen Interactive Candlestick Chart */}
         <TradingChart
           market={currentMarket}
-          signal={chartSignal}
+          signal={activeSignal}
           currentPrice={livePrice}
           onPriceChange={(price) => setLivePrice(price)}
         />
@@ -324,57 +327,62 @@ https://sfcapitalfx.netlify.app`
         <aside className="po-order-panel">
           <div className="po-panel-header">
             <span className="po-panel-title">
-              DEMO TRADE PREVIEW
+              PAPER TRADE SIMULATOR
             </span>
+            <span className="po-winrate-chip">NO BROKER</span>
           </div>
 
           {/* Trade Amount Box */}
           <div className="po-input-group">
             <div className="po-input-label">
-              <span>Simulated Stake</span>
+              <span>Risk Budget · Demo</span>
               <span>USD</span>
             </div>
             <div className="po-input-box">
               <button
                 className="po-btn-step"
-                onClick={() => setTradeAmount(Math.max(10, tradeAmount - 25))}
+                onClick={() => setTradeAmount((amount) => Math.max(1, amount - 25))}
               >
                 -
               </button>
               <span>${tradeAmount}</span>
               <button
                 className="po-btn-step"
-                onClick={() => setTradeAmount(tradeAmount + 25)}
+                onClick={() => setTradeAmount((amount) => Math.min(Math.max(1, Math.floor(demoBalance * 0.02)), amount + 25))}
               >
                 +
               </button>
             </div>
           </div>
 
-          <div className="po-payout-box" role="note">
-            <span className="po-payout-label">Preview only. No broker is connected; no trade will be placed.</span>
+          {/* Payout Return Calculation Box */}
+          <div className="po-payout-box">
+            <span className="po-payout-label">Illustrative TP1 reward:</span>
+            <span className="po-payout-val">
+              {tp1RiskMultiple === null ? 'N/A' : `+$${(tradeAmount * tp1RiskMultiple).toFixed(2)}`}
+            </span>
           </div>
 
           {/* HIGH-IMPACT CALL / PUT BUTTONS (POCKET OPTION SIGNATURE) */}
           <div className="po-action-buttons">
             <button
               className="po-btn-trade call"
-              onClick={() => handleExecuteTrade('CALL')}
+              onClick={() => handleExecuteTrade('BUY')}
             >
               <div className="po-trade-copy">
-                <span className="po-trade-title">Preview BUY</span>
-                <span className="po-trade-subtitle">Simulated direction only</span>
+                <span className="po-trade-title">SIMULATE BUY</span>
+                <span className="po-trade-subtitle">Paper only · no order routed</span>
               </div>
               <span className="po-trade-icon">▲</span>
             </button>
 
             <button
               className="po-btn-trade put"
-              onClick={() => handleExecuteTrade('PUT')}
+              onClick={() => handleExecuteTrade('SELL')}
             >
               <div className="po-trade-copy">
-                <span className="po-trade-title">Preview SELL</span>
-                <span className="po-trade-subtitle">Simulated direction only</span>
+                <span className="po-trade-title">SIMULATE SELL</span>
+                <span className="po-trade-subtitle">Paper only · no order routed</span>
               </div>
               <span className="po-trade-icon">▼</span>
             </button>
@@ -435,7 +443,7 @@ https://sfcapitalfx.netlify.app`
             <div className="po-section-icon">📡</div>
             <div>
               <h2 className="po-section-heading">TradingView Signal Feed</h2>
-              <span className="po-section-subtext">Signal levels and status are provided by the configured API. Sample data is shown when it is unavailable.</span>
+              <span className="po-section-subtext">Backend updates poll every 25 seconds; sample records remain visible when offline.</span>
             </div>
           </div>
 
@@ -460,10 +468,10 @@ https://sfcapitalfx.netlify.app`
                 {isLocked && (
                   <div className="po-locked-overlay">
                     <span className="po-locked-crown">👑</span>
-                    <span className="po-locked-title">MEMBERS-ONLY SIGNAL</span>
-                    <span className="po-locked-sub">A premium membership is required to view these levels.</span>
+                    <span className="po-locked-title">VIP PRO SIGNAL LOCKED</span>
+                    <span className="po-locked-sub">Exclusive high-conviction breakout signal reserved for VIP members.</span>
                     <button className="po-btn-unlock-vip" onClick={() => setActiveModal('vip')}>
-                      View membership
+                      Unlock for $49/mo
                     </button>
                   </div>
                 )}
@@ -545,11 +553,11 @@ https://sfcapitalfx.netlify.app`
         </div>
       </section>
 
-      {/* SAMPLE PERFORMANCE SUMMARY */}
+      {/* PERFORMANCE & ANALYTICS DIALS */}
       <section className="po-analytics-section" id="performance">
         <div className="po-section-header">
-          <h2 className="po-section-heading">Signal History Summary</h2>
-          <span className="po-section-subtext">Calculated from the signal records currently loaded; past results do not predict future performance.</span>
+          <h2 className="po-section-heading">Signal Record Analytics</h2>
+          <span className="po-section-subtext">Calculated from closed records currently loaded; results are not independently audited.</span>
         </div>
         <div className="po-stats-grid">
           <div className="po-stat-card">
@@ -558,7 +566,7 @@ https://sfcapitalfx.netlify.app`
               <span className="po-stat-icon">🎯</span>
             </div>
             <span className="po-stat-value green">{stats.winRate === null ? 'N/A' : `${stats.winRate}%`}</span>
-            <span className="po-stat-foot">{stats.totalTrades} closed signals in loaded history</span>
+            <span className="po-stat-foot">Based on {stats.totalTrades} closed signals</span>
           </div>
 
           <div className="po-stat-card">
@@ -567,7 +575,7 @@ https://sfcapitalfx.netlify.app`
               <span className="po-stat-icon">📈</span>
             </div>
             <span className="po-stat-value cyan">{stats.totalPips > 0 ? '+' : ''}{stats.totalPips.toLocaleString()}</span>
-            <span className="po-stat-foot">Pips reported by signal records</span>
+            <span className="po-stat-foot">Closed signal records only</span>
           </div>
 
           <div className="po-stat-card">
@@ -575,17 +583,17 @@ https://sfcapitalfx.netlify.app`
               <span className="po-stat-label">PROFIT FACTOR</span>
               <span className="po-stat-icon">⚡</span>
             </div>
-            <span className="po-stat-value gold">{stats.profitFactor}</span>
-            <span className="po-stat-foot">Closed-signal pip ratio</span>
+            <span className="po-stat-value gold">{stats.profitFactor === null ? 'N/A' : stats.profitFactor}</span>
+            <span className="po-stat-foot">Gross pips won ÷ gross pips lost</span>
           </div>
 
           <div className="po-stat-card">
             <div className="po-stat-top">
-              <span className="po-stat-label">LOADED SIGNALS</span>
+              <span className="po-stat-label">CLOSED RECORDS</span>
               <span className="po-stat-icon">👥</span>
             </div>
-            <span className="po-stat-value">{signals.length}</span>
-            <span className="po-stat-foot">Current feed records</span>
+            <span className="po-stat-value">{stats.totalTrades}</span>
+            <span className="po-stat-foot">In the currently loaded feed</span>
           </div>
         </div>
       </section>
@@ -594,7 +602,7 @@ https://sfcapitalfx.netlify.app`
       <section className="po-pricing-section" id="pricing">
         <div style={{ textAlign: 'center', marginBottom: 36 }}>
           <h2 className="po-section-heading" style={{ fontSize: 26 }}>Membership Plans</h2>
-          <span className="po-section-subtext">Premium access is managed by the backend. Online checkout is not configured.</span>
+          <span className="po-section-subtext">Published rates are shown for reference. Online checkout is not configured; VIP access is activated after manual payment verification.</span>
         </div>
 
         <div className="po-pricing-grid">
@@ -607,28 +615,43 @@ https://sfcapitalfx.netlify.app`
             <ul className="po-plan-features">
               <li><span className="check">✓</span> Selected public signals</li>
               <li><span className="check">✓</span> TP1 access</li>
-              <li><span className="check">✓</span> Sample signal history</li>
+              <li><span className="check">✓</span> Signal feed access</li>
             </ul>
-            <button className="po-btn-plan" onClick={() => user ? showToast('Your account is on the free tier.') : setActiveModal('auth')}>
-              {user ? 'Free tier' : 'Sign in'}
+            <button className="po-btn-plan" onClick={() => showToast('You are on Free Starter Plan')}>
+              Current Tier
             </button>
           </div>
 
           {/* Pro VIP Plan */}
           <div className="po-plan-card featured">
-            <span className="po-plan-badge">MOST POPULAR</span>
             <h3 className="po-plan-name">VIP Pro</h3>
             <div className="po-plan-price">
-              $100 <span>/ 30 days</span>
+              $49 <span>/ 30 days</span>
             </div>
             <ul className="po-plan-features">
-              <li><span className="check">✓</span> Premium signal levels</li>
-              <li><span className="check">✓</span> TP1, TP2 and TP3 targets</li>
-              <li><span className="check">✓</span> Access managed by the API</li>
+              <li><span className="check">✓</span> Full TP1–TP3 signal levels</li>
+              <li><span className="check">✓</span> Premium signal access</li>
               <li><span className="check">✓</span> Telegram delivery when configured</li>
+              <li><span className="check">✓</span> 30-day access after verification</li>
             </ul>
             <button className="po-btn-plan primary" onClick={() => setActiveModal('vip')}>
               Membership details
+            </button>
+          </div>
+
+          {/* Custom Plan */}
+          <div className="po-plan-card">
+            <h3 className="po-plan-name">Custom</h3>
+            <div className="po-plan-price">
+              Quote <span>before payment</span>
+            </div>
+            <ul className="po-plan-features">
+              <li><span className="check">✓</span> Scope and delivery agreed in advance</li>
+              <li><span className="check">✓</span> Written quote before payment</li>
+              <li><span className="check">✓</span> No lifetime promise</li>
+            </ul>
+            <button className="po-btn-plan" onClick={() => setActiveModal('vip')}>
+              Contact for a quote
             </button>
           </div>
         </div>
@@ -643,18 +666,18 @@ https://sfcapitalfx.netlify.app`
               <div className="po-dock-title">
                 <span>⚡ TradingView Webhook Endpoint</span>
               </div>
-              <span className={`po-dock-badge tv ${isLiveConnected ? 'connected' : ''}`}>{isLiveConnected ? 'API ONLINE' : 'DEMO MODE'}</span>
+              <span className={`po-dock-badge tv ${isLiveConnected ? 'connected' : ''}`}>{isLiveConnected ? 'API REACHABLE' : 'NOT CONNECTED'}</span>
             </div>
             <p style={{ fontSize: 12, color: '#8e9fab', margin: 0 }}>
-              Alerts are forwarded to the configured backend for validation and storage. Delivery requires a working backend connection:
+              Alerts are stored and distributed only when a persistent backend is configured and reachable.
             </p>
             <div className="po-code-box">
-              <code>https://sfcapitalfx.netlify.app/api/webhooks/tradingview</code>
+              <code>{webhookUrl}</code>
               <button
                 className="po-btn-step"
                 style={{ width: 'auto', padding: '0 8px', fontSize: 10 }}
                 onClick={() => {
-                  copyToClipboard('https://sfcapitalfx.netlify.app/api/webhooks/tradingview')
+                  copyToClipboard(webhookUrl)
                   showToast('✓ Webhook URL copied!')
                 }}
               >
@@ -669,10 +692,10 @@ https://sfcapitalfx.netlify.app`
               <div className="po-dock-title">
                 <span>📱 Telegram VIP Bot & Channel</span>
               </div>
-              <span className="po-dock-badge tg">BACKEND ROUTED</span>
+              <span className="po-dock-badge tg">CONFIGURATION-DEPENDENT</span>
             </div>
             <p style={{ fontSize: 12, color: '#8e9fab', margin: 0 }}>
-              Accepted signals can be sent to Telegram when credentials and a target channel are configured on the backend:
+              Telegram delivery requires SF_TELEGRAM_BOT_TOKEN and SF_TELEGRAM_CHAT_ID on the backend.
             </p>
             <div className="po-code-box">
               <code>Channel: @sfcapitalfrx · Bot: @SFCapitalFxbot</code>
@@ -709,67 +732,40 @@ https://sfcapitalfx.netlify.app`
           <div className="po-modal" onClick={(e) => e.stopPropagation()}>
             <button className="po-modal-close" onClick={() => setActiveModal(null)}>✕</button>
             <h3 className="po-modal-title">Trader Account</h3>
-            <p className="po-modal-desc">Use your API account to access membership-gated signal levels.</p>
-            <div className="auth-tabs" role="tablist" aria-label="Account access">
-              <button
-                type="button"
-                className={`auth-tab ${authMode === 'login' ? 'active' : ''}`}
-                onClick={() => { setAuthMode('login'); setAuthError(null) }}
-              >
-                Sign in
-              </button>
-              <button
-                type="button"
-                className={`auth-tab ${authMode === 'register' ? 'active' : ''}`}
-                onClick={() => { setAuthMode('register'); setAuthError(null) }}
-              >
-                Create account
-              </button>
-            </div>
-            <form onSubmit={handleAuthSubmit}>
-              {authMode === 'register' && (
-                <div className="po-form-group">
-                  <label className="po-form-label" htmlFor="auth-name">Full Name</label>
-                  <input
-                    id="auth-name"
-                    type="text"
-                    className="po-form-input"
-                    autoComplete="name"
-                    value={authName}
-                    onChange={(e) => setAuthName(e.target.value)}
-                  />
+            {user ? (
+              <>
+                <p className="po-modal-desc">Signed in as {user.email}. Membership: {user.membershipStatus}.</p>
+                <button className="po-btn-submit" onClick={handleLogout}>Sign out</button>
+              </>
+            ) : (
+              <>
+                <p className="po-modal-desc">Sign in or create an account to access membership-gated signals.</p>
+                <div className="po-filter-tabs auth-tabs" role="tablist" aria-label="Account access">
+                  <button type="button" className={`po-filter-btn ${authMode === 'login' ? 'active' : ''}`} onClick={() => { setAuthMode('login'); setAuthError(null) }}>Sign in</button>
+                  <button type="button" className={`po-filter-btn ${authMode === 'register' ? 'active' : ''}`} onClick={() => { setAuthMode('register'); setAuthError(null) }}>Create account</button>
                 </div>
-              )}
-              <div className="po-form-group">
-                <label className="po-form-label" htmlFor="auth-email">Email Address</label>
-                <input
-                  id="auth-email"
-                  type="email"
-                  className="po-form-input"
-                  autoComplete="email"
-                  required
-                  value={authEmail}
-                  onChange={(e) => setAuthEmail(e.target.value)}
-                />
-              </div>
-              <div className="po-form-group">
-                <label className="po-form-label" htmlFor="auth-password">Password</label>
-                <input
-                  id="auth-password"
-                  type="password"
-                  className="po-form-input"
-                  autoComplete={authMode === 'login' ? 'current-password' : 'new-password'}
-                  minLength={authMode === 'register' ? 8 : undefined}
-                  required
-                  value={authPassword}
-                  onChange={(e) => setAuthPassword(e.target.value)}
-                />
-              </div>
-              {authError && <p className="po-form-error" role="alert">{authError}</p>}
-              <button type="submit" className="po-btn-submit">
-                {authMode === 'login' ? 'Sign in' : 'Create account'}
-              </button>
-            </form>
+                <form onSubmit={handleAuthSubmit}>
+                  {authMode === 'register' && (
+                    <div className="po-form-group">
+                      <label className="po-form-label" htmlFor="auth-name">Full Name</label>
+                      <input id="auth-name" type="text" className="po-form-input" autoComplete="name" value={authName} onChange={(e) => setAuthName(e.target.value)} />
+                    </div>
+                  )}
+                  <div className="po-form-group">
+                    <label className="po-form-label" htmlFor="auth-email">Email Address</label>
+                    <input id="auth-email" type="email" className="po-form-input" autoComplete="email" required value={authEmail} onChange={(e) => setAuthEmail(e.target.value)} />
+                  </div>
+                  <div className="po-form-group">
+                    <label className="po-form-label" htmlFor="auth-password">Password</label>
+                    <input id="auth-password" type="password" className="po-form-input" autoComplete={authMode === 'login' ? 'current-password' : 'new-password'} minLength={8} required value={authPassword} onChange={(e) => setAuthPassword(e.target.value)} />
+                  </div>
+                  {authError && <p className="po-form-error" role="alert">{authError}</p>}
+                  <button type="submit" className="po-btn-submit" disabled={isAuthenticating}>
+                    {isAuthenticating ? 'Please wait…' : authMode === 'login' ? 'Sign in' : 'Create account'}
+                  </button>
+                </form>
+              </>
+            )}
           </div>
         </div>
       )}
@@ -779,25 +775,24 @@ https://sfcapitalfx.netlify.app`
         <div className="po-modal-overlay" onClick={() => setActiveModal(null)}>
           <div className="po-modal" onClick={(e) => e.stopPropagation()}>
             <button className="po-modal-close" onClick={() => setActiveModal(null)}>✕</button>
-            <h3 className="po-modal-title">👑 Activate SF CAPITAL FX VIP</h3>
+            <h3 className="po-modal-title">VIP Pro · $49 / 30 days</h3>
             <p className="po-modal-desc">
-              Premium signal access is configured at $100 USD for 30 days.
+              Checkout is not available on this site. Contact the Telegram channel for current payment instructions; VIP access is enabled only after manual verification.
             </p>
             <div style={{ background: '#111a24', padding: 16, borderRadius: 10, border: '1px solid #1d2d42', marginBottom: 16 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-                <span style={{ fontWeight: 700 }}>Premium 30 Days</span>
-                <span style={{ color: '#00e676', fontWeight: 800 }}>$100.00 USD</span>
+                <span style={{ fontWeight: 700 }}>VIP Pro · 30-day access</span>
+                <span style={{ color: '#00e676', fontWeight: 800 }}>$49.00 USD</span>
               </div>
               <div style={{ fontSize: 12, color: '#8e9fab' }}>
-                • Access to premium signal levels<br />
-                • Price matches the configured backend plan<br />
-                • Checkout is not currently configured
+                • Full TP1–TP3 levels after activation<br />
+                • Telegram delivery when configured<br />
+                • No automatic renewal or payment capture here
               </div>
             </div>
-            <p className="po-modal-desc" role="note">No payment will be taken and membership will not be activated from this page.</p>
-            <button className="po-btn-submit" disabled>
-              Checkout unavailable
-            </button>
+            <a className="po-btn-submit" href="https://t.me/sfcapitalfrx" target="_blank" rel="noopener noreferrer">
+              Open Telegram channel
+            </a>
           </div>
         </div>
       )}
@@ -809,13 +804,8 @@ https://sfcapitalfx.netlify.app`
           user={user}
           onClose={() => setActiveModal(null)}
           onAddSignal={(s) => setSignals((prev) => [s, ...prev])}
-          onUpdateStatus={(id, status) => {
-            setSignals((prev) =>
-              prev.map((s) => (s.id === id ? { ...s, status } : s))
-            )
-          }}
-          onToggleUserTier={(status) => {
-            if (user) setUser({ ...user, membershipStatus: status })
+          onUpdateSignal={(updatedSignal) => {
+            setSignals((prev) => prev.map((signal) => (signal.id === updatedSignal.id ? updatedSignal : signal)))
           }}
           onToast={showToast}
         />

@@ -116,13 +116,14 @@ Every time a pull request is opened on `https://github.com/vatpro8-png/Forex-Tra
 The repository includes pre-built Netlify Functions in `netlify/functions/`:
 
 1. **`tradingview-webhook.js`** (`POST /api/webhooks/tradingview`):
-  * Requires a configured shared secret and validates directional price levels.
-  * Forwards the request to the configured backend; the backend owns persistence and Telegram delivery.
-  * Returns the backend's response and fails with `503` when no backend is configured.
+   * Validates `secret` from TradingView alert payload or `X-SF-Webhook-Secret` header.
+   * Normalizes pair (`XAUUSD`, `BTCUSD`, `USOIL`) and action (`BUY`/`SELL`).
+   * Forwards formatted notification to Telegram Bot API (`https://api.telegram.org/bot<TOKEN>/sendMessage`).
+   * Returns `201 Created` with unique idempotent signal ID.
 
 2. **`signals.js`** (`GET /api/signals`):
-  * Proxies the authenticated request to the backend without caching personalized signal data.
-  * Returns `503` when no backend is configured.
+   * Serves structured live signals with entry, SL, and TP1–3 levels.
+   * Cached at the edge with `Cache-Control: public, max-age=15, s-maxage=30`.
 
 ---
 
@@ -133,11 +134,11 @@ In your Netlify Site Dashboard, navigate to **Site configuration** → **Environ
 | Variable Name | Required | Description | Example / Default |
 | :--- | :---: | :--- | :--- |
 | `NODE_VERSION` | Yes | Node runtime version | `20` |
-| `SF_WEBHOOK_SECRET` | Yes | Same strong random secret on Netlify and the backend | Set in both environments; never commit it |
-| `BACKEND_API_URL` | Yes | Base URL of the Node API compatible with `/api/signals` and `/api/webhooks/tradingview` | `https://api.sfcapitalfx.com` |
-| `SF_TELEGRAM_BOT_TOKEN` | Optional | Telegram bot token configured on the backend | Set on the backend, not Netlify |
-| `SF_TELEGRAM_CHAT_ID` | Optional | Target VIP Telegram chat/channel ID configured on the backend | `@sfcapitalfrx` or `-1001234567890` |
-| `SF_JWT_SECRET` | Yes | Signing key for backend authentication tokens | Set on the backend |
+| `SF_WEBHOOK_SECRET` | Yes | Shared secret for TradingView alerts | `replace-with-a-long-random-secret` |
+| `SF_TELEGRAM_BOT_TOKEN` | Optional | Telegram bot token from @BotFather | `123456789:ABCdefGhIJKlmNoPQRstuVWXyz` |
+| `SF_TELEGRAM_CHAT_ID` | Optional | Target VIP Telegram chat/channel ID | `@sfcapitalfrx` or `-1001234567890` |
+| `SF_JWT_SECRET` | Optional | Signing key for authentication tokens | `long-random-jwt-signing-secret` |
+| `BACKEND_API_URL` | Optional | Dedicated C++ or VPS API endpoint (if proxying) | `https://api.sfcapitalfx.com` |
 
 ---
 

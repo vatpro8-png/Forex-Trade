@@ -7,9 +7,17 @@ interface AdminConsoleProps {
   user: User | null
   onClose: () => void
   onAddSignal: (signal: Signal) => void
-  onUpdateStatus: (signalId: string, status: SignalStatus) => void
-  onToggleUserTier: (status: 'FREE' | 'PREMIUM') => void
+  onUpdateSignal: (signal: Signal) => void
   onToast: (msg: string) => void
+}
+
+interface TelegramDelivery {
+  id: string
+  signalId: string
+  messageType: string
+  status: string
+  lastAttemptAt: string
+  lastError?: string | null
 }
 
 export const AdminConsole: React.FC<AdminConsoleProps> = ({
@@ -17,8 +25,7 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
   user,
   onClose,
   onAddSignal,
-  onUpdateStatus,
-  onToggleUserTier,
+  onUpdateSignal,
   onToast,
 }) => {
   const [tab, setTab] = useState<'webhook' | 'milestones' | 'members' | 'telegram'>('webhook')
@@ -33,20 +40,45 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
   const [tp3, setTp3] = useState('2722.00')
   const [secret, setSecret] = useState('')
   const [isSimulating, setIsSimulating] = useState(false)
+  const [targetEmail, setTargetEmail] = useState('')
+  const [paymentReference, setPaymentReference] = useState('')
+  const [isActivating, setIsActivating] = useState(false)
+  const [telegramDeliveries, setTelegramDeliveries] = useState<TelegramDelivery[]>([])
+  const [telegramError, setTelegramError] = useState<string | null>(null)
+  const [isTelegramLoading, setIsTelegramLoading] = useState(false)
 
   useEffect(() => {
-    const market = MARKETS.find((item) => item.symbol === selectedPair)
-    if (!market) return
+    if (tab !== 'telegram') return
 
-    const entry = market.price
-    const stopMultiplier = direction === 'BUY' ? 0.995 : 1.005
-    const targetMultipliers = direction === 'BUY' ? [1.005, 1.01, 1.018] : [0.995, 0.99, 0.982]
-    setEntryPrice(entry.toFixed(market.digits))
-    setStopLoss((entry * stopMultiplier).toFixed(market.digits))
-    setTp1((entry * targetMultipliers[0]).toFixed(market.digits))
-    setTp2((entry * targetMultipliers[1]).toFixed(market.digits))
-    setTp3((entry * targetMultipliers[2]).toFixed(market.digits))
-  }, [selectedPair, direction])
+    const token = localStorage.getItem('sf-session-token')
+    if (!token) {
+      setTelegramError('Admin authentication is required.')
+      return
+    }
+
+    let isCurrent = true
+    setIsTelegramLoading(true)
+    setTelegramError(null)
+    fetch('/api/admin/telegram/deliveries', { headers: { Authorization: `Bearer ${token}` } })
+      .then(async (response) => {
+        const data = await response.json()
+        if (!response.ok) throw new Error(data.error || 'Unable to load Telegram delivery history.')
+        return data as TelegramDelivery[]
+      })
+      .then((data) => {
+        if (isCurrent) setTelegramDeliveries(data)
+      })
+      .catch((error) => {
+        if (isCurrent) setTelegramError(error instanceof Error ? error.message : 'Unable to load Telegram delivery history.')
+      })
+      .finally(() => {
+        if (isCurrent) setIsTelegramLoading(false)
+      })
+
+    return () => {
+      isCurrent = false
+    }
+  }, [tab])
 
   const handleSimulateWebhook = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -72,15 +104,58 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
         body: JSON.stringify(payload),
       })
       const result = await response.json()
-      if (!response.ok) throw new Error(result.error || 'Webhook request failed.')
-      if (!result.signal) throw new Error('Backend response did not include a stored signal.')
-
-      onAddSignal(result.signal as Signal)
+      if (!response.ok || !result.accepted) throw new Error(result.error || 'Webhook request failed.')
+      if (result.signal) onAddSignal(result.signal)
       onToast(`Backend accepted ${selectedPair} ${direction}.`)
     } catch (error) {
       onToast(error instanceof Error ? error.message : 'Webhook request failed.')
     } finally {
       setIsSimulating(false)
+    }
+  }
+
+  const handleUpdateMilestone = async (signalId: string, status: SignalStatus) => {
+    try {
+      const token = localStorage.getItem('sf-session-token')
+      const response = await fetch('/api/signals/milestone', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ id: signalId, status }),
+      })
+      const result = await response.json()
+      if (!response.ok) throw new Error(result.error || 'Milestone update failed.')
+      onUpdateSignal(result.signal)
+      onToast(`Signal ${signalId} updated to ${status}.`)
+    } catch (error) {
+      onToast(error instanceof Error ? error.message : 'Milestone update failed.')
+    }
+  }
+
+  const handleActivateMember = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setIsActivating(true)
+    try {
+      const token = localStorage.getItem('sf-session-token')
+      const response = await fetch('/api/admin/subscriptions/activate', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ email: targetEmail, days: 30, reference: paymentReference }),
+      })
+      const result = await response.json()
+      if (!response.ok) throw new Error(result.error || 'Membership activation failed.')
+      setTargetEmail('')
+      setPaymentReference('')
+      onToast(`30-day VIP activated for ${result.user.email}.`)
+    } catch (error) {
+      onToast(error instanceof Error ? error.message : 'Membership activation failed.')
+    } finally {
+      setIsActivating(false)
     }
   }
 
@@ -93,7 +168,7 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
         <div className="eyebrow">SF CAPITAL FX ADMIN CONSOLE</div>
         <h2>Platform Operations & Signal Dispatch</h2>
         <p className="modal-subtitle">
-          Send test alerts to the configured API and review local signal and membership controls.
+          Manage live TradingView alerts, milestone transitions, Telegram delivery queues, and 30-day VIP memberships.
         </p>
 
         <div className="auth-tabs" style={{ marginBottom: 20 }}>
@@ -132,6 +207,14 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
                   value={selectedPair}
                   onChange={(e) => {
                     setSelectedPair(e.target.value)
+                    const m = MARKETS.find((item) => item.symbol === e.target.value)
+                    if (m) {
+                      setEntryPrice(m.price.toString())
+                      setStopLoss((m.price * 0.995).toFixed(m.digits))
+                      setTp1((m.price * 1.005).toFixed(m.digits))
+                      setTp2((m.price * 1.01).toFixed(m.digits))
+                      setTp3((m.price * 1.018).toFixed(m.digits))
+                    }
                   }}
                 >
                   {MARKETS.map((m) => (
@@ -211,10 +294,11 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
             </div>
 
             <label>
-              Webhook Secret
+              Webhook Secret (Signed Token)
               <input
                 type="password"
                 value={secret}
+                autoComplete="off"
                 onChange={(e) => setSecret(e.target.value)}
                 required
               />
@@ -229,7 +313,7 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
               {isSimulating ? 'Dispatching...' : '📡 Send TradingView Webhook Alert'}
             </button>
             <small className="fine-print">
-              Fires a validated payload to the C++ webhook intake endpoint and triggers dashboard & Telegram fan-out.
+              Sends this test payload to the configured backend. It is not created locally if the request fails.
             </small>
           </form>
         )}
@@ -252,8 +336,7 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
                     className="btn btn-small"
                     style={{ background: '#e4f6ef', color: '#087b59', border: '1px solid #11a879' }}
                     onClick={() => {
-                      onUpdateStatus(s.id, 'TP1_HIT')
-                      onToast(`Signal ${s.id} marked as TP1 HIT`)
+                      void handleUpdateMilestone(s.id, 'TP1_HIT')
                     }}
                   >
                     TP1 Hit
@@ -262,8 +345,7 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
                     className="btn btn-small"
                     style={{ background: '#e4f6ef', color: '#087b59', border: '1px solid #11a879' }}
                     onClick={() => {
-                      onUpdateStatus(s.id, 'TP2_HIT')
-                      onToast(`Signal ${s.id} marked as TP2 HIT`)
+                      void handleUpdateMilestone(s.id, 'TP2_HIT')
                     }}
                   >
                     TP2 Hit
@@ -272,8 +354,7 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
                     className="btn btn-small"
                     style={{ background: '#fdf2f2', color: '#d9534f', border: '1px solid #d9534f' }}
                     onClick={() => {
-                      onUpdateStatus(s.id, 'SL_HIT')
-                      onToast(`Signal ${s.id} marked as SL HIT`)
+                      void handleUpdateMilestone(s.id, 'SL_HIT')
                     }}
                   >
                     SL Hit
@@ -282,8 +363,7 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
                     className="btn btn-small"
                     style={{ background: '#102c49', color: '#fff' }}
                     onClick={() => {
-                      onUpdateStatus(s.id, 'CLOSED')
-                      onToast(`Signal ${s.id} closed`)
+                      void handleUpdateMilestone(s.id, 'CLOSED')
                     }}
                   >
                     Close
@@ -296,43 +376,20 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
 
         {tab === 'members' && (
           <div className="admin-members-view">
-            <div className="admin-member-card">
-              <div>
-                <strong>Active User Session:</strong> {user ? user.email : 'Guest / Not signed in'}
-                <div style={{ marginTop: 6, fontSize: 12, color: '#68798a' }}>
-                  Current Status: <b style={{ color: user?.membershipStatus === 'PREMIUM' ? '#11a879' : '#c38d35' }}>
-                    {user?.membershipStatus || 'FREE'}
-                  </b>
-                  {user?.membershipStatus === 'PREMIUM' && ' · 30-Day VIP Active'}
-                </div>
-              </div>
-              <div style={{ display: 'flex', gap: 10 }}>
-                <button
-                  className="btn btn-primary btn-small"
-                  onClick={() => {
-                    onToggleUserTier('PREMIUM')
-                    onToast('Account upgraded to 30-Day Premium!')
-                  }}
-                >
-                  ✓ Activate 30-Day VIP
-                </button>
-                <button
-                  className="btn btn-quiet btn-small"
-                  onClick={() => {
-                    onToggleUserTier('FREE')
-                    onToast('Account reverted to Free Starter')
-                  }}
-                >
-                  Revert to Free
-                </button>
-              </div>
-            </div>
-
-            <div className="payment-steps" style={{ marginTop: 24 }}>
-              <div><b>01</b><span>User submits payment receipt via @sfcapitalfrx on Telegram.</span></div>
-              <div><b>02</b><span>Admin matches transaction reference in crypto/bank portal.</span></div>
-              <div><b>03</b><span>Click "Activate 30-Day VIP" to grant full access to exclusive XAUUSD/BTCUSD/USOIL signals.</span></div>
-            </div>
+            <p className="admin-notice">Signed in as {user?.email}. Verify the payment independently before granting access.</p>
+            <form className="admin-form" onSubmit={handleActivateMember}>
+              <label>
+                Member email
+                <input type="email" value={targetEmail} onChange={(e) => setTargetEmail(e.target.value)} required />
+              </label>
+              <label>
+                Verified payment reference
+                <input type="text" value={paymentReference} onChange={(e) => setPaymentReference(e.target.value)} required />
+              </label>
+              <button type="submit" className="btn btn-primary full-btn" disabled={isActivating}>
+                {isActivating ? 'Activating…' : 'Activate 30-day VIP'}
+              </button>
+            </form>
           </div>
         )}
 
@@ -340,32 +397,33 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
           <div className="admin-telegram-view">
             <div className="telegram-status-summary">
               <div>
-                <small>TELEGRAM BOT INTEGRATION</small>
-                <strong>@SFCapitalFxBot · Channel @sfcapitalfrx</strong>
+                <small>TELEGRAM DELIVERY HISTORY</small>
+                <strong>Latest backend outbox records</strong>
               </div>
-              <span className="live-dot" style={{ marginLeft: 10 }}></span>
+              <span className="data-note">{isTelegramLoading ? 'Loading' : `${telegramDeliveries.length} records`}</span>
             </div>
-            <div className="telegram-message-preview">
-              <pre>
-{`⚡ SF CAPITAL FX — NEW SIGNAL ⚡
-━━━━━━━━━━━━━━━━━━━━
-🎯 Pair: #XAUUSD (GOLD)
-📊 Direction: BUY 🟢
-⏱ Timeframe: 15m
-📍 Entry: 2686.50
-🛑 Stop Loss: 2674.00 (-125 pips)
-🎯 TP1: 2696.00 (+95 pips)
-🎯 TP2: 2708.00 (+215 pips)
-🎯 TP3: 2722.00 (+355 pips)
-━━━━━━━━━━━━━━━━━━━━
-🔒 Risk: 1-2% max per trade
-📡 Source: SF CAPITAL FX Verified Engine
-🌐 Web Platform: https://sfcapitalfx.netlify.app`}
-              </pre>
-            </div>
-            <p className="data-note">
-              Retry queue: 0 pending, 38 delivered, 0 dropped. Idempotent key deduplication active.
-            </p>
+            {telegramError ? (
+              <p className="admin-notice" role="alert">{telegramError}</p>
+            ) : telegramDeliveries.length === 0 && !isTelegramLoading ? (
+              <p className="admin-notice">No delivery records are available. Confirm that the backend and Telegram credentials are configured.</p>
+            ) : (
+              <div className="admin-milestone-list">
+                {telegramDeliveries.map((delivery) => (
+                  <div className="admin-signal-row" key={delivery.id}>
+                    <div>
+                      <strong>{delivery.messageType}</strong>
+                      <div style={{ fontSize: 11, color: '#8293a4' }}>
+                        Signal: {delivery.signalId} · {new Date(delivery.lastAttemptAt).toLocaleString()}
+                      </div>
+                    </div>
+                    <div>
+                      <strong>{delivery.status}</strong>
+                      {delivery.lastError && <div style={{ fontSize: 11, color: '#d9534f' }}>{delivery.lastError}</div>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
       </div>

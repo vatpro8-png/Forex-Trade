@@ -3,7 +3,7 @@
    High-contrast Obsidian, Slate, Neon Green (Call), Neon Red (Put), Cyan & Gold
    ============================================================================== */
 
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=IBM+Plex+Mono:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@300;400;500;600;700&family=Manrope:wght@600;700;800&display=swap');
 
 :root {
   --po-bg-darkest: #080c11;
@@ -40,7 +40,7 @@
   --po-text-muted: #56697a;
 
   /* Font Families */
-  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-sans: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, sans-serif;
   --font-mono: 'IBM Plex Mono', monospace;
   --font-heading: 'Manrope', 'Inter', sans-serif;
 
@@ -988,14 +988,14 @@ button, input, select {
 /* Signals Grid */
 .po-signals-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 360px), 1fr));
   gap: 16px;
 }
 
 .po-signal-card {
   background: var(--po-bg-surface);
   border: 1px solid var(--po-border);
-  border-radius: 12px;
+  border-radius: 8px;
   padding: 18px;
   display: flex;
   flex-direction: column;
@@ -1307,7 +1307,7 @@ button, input, select {
 .po-plan-card {
   background: var(--po-bg-surface);
   border: 1px solid var(--po-border);
-  border-radius: 14px;
+  border-radius: 8px;
   padding: 28px;
   display: flex;
   flex-direction: column;
@@ -1452,7 +1452,7 @@ button, input, select {
 .po-dock-card {
   background: var(--po-bg-surface);
   border: 1px solid var(--po-border);
-  border-radius: 12px;
+  border-radius: 8px;
   padding: 24px;
   display: flex;
   flex-direction: column;
@@ -1615,6 +1615,29 @@ button, input, select {
   box-shadow: 0 8px 24px var(--po-cyan-glow);
 }
 
+.po-btn-submit:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.po-btn-submit[href] {
+  display: block;
+  text-align: center;
+}
+
+.po-form-error {
+  color: #ff8296;
+  font-size: 12px;
+  margin: 0 0 10px;
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible {
+  outline: 2px solid var(--po-cyan);
+  outline-offset: 3px;
+}
+
 /* ==============================================================================
    FOOTER
    ============================================================================== */
@@ -1639,4 +1662,100 @@ button, input, select {
 
 .po-footer-links a:hover {
   color: var(--po-cyan);
+}
+
+@media (max-width: 760px) {
+  .po-top-ribbon {
+    height: auto;
+    min-height: 38px;
+    padding: 6px 12px;
+  }
+
+  .po-ribbon-left {
+    width: 100%;
+    gap: 8px;
+  }
+
+  .po-ribbon-right {
+    display: none;
+  }
+
+  .po-live-pulse-badge {
+    white-space: nowrap;
+  }
+
+  .po-header {
+    height: auto;
+    min-height: 64px;
+    padding: 10px 12px;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  .po-header-assets {
+    order: 3;
+    width: 100%;
+    overflow-x: auto;
+    justify-content: flex-start;
+    padding-bottom: 2px;
+  }
+
+  .po-asset-pill {
+    flex: 0 0 auto;
+  }
+
+  .po-header-right {
+    gap: 8px;
+  }
+
+  .po-balance-box {
+    padding: 5px 8px;
+  }
+
+  .po-balance-amount {
+    font-size: 12px;
+  }
+
+  .po-btn-vip-gold {
+    padding: 8px 10px;
+    font-size: 10px;
+  }
+
+  .po-signals-section,
+  .po-analytics-section,
+  .po-pricing-section,
+  .po-integration-dock {
+    padding: 24px 14px;
+  }
+
+  .po-signals-grid,
+  .po-pricing-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .po-card-prices {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .po-code-box {
+    align-items: flex-start;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  .po-code-box code {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .po-footer-links {
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+
+  .po-toast {
+    left: 12px;
+    right: 12px;
+    bottom: 12px;
+  }
 }

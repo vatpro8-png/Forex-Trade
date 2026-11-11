@@ -1,4 +1,4 @@
-// Netlify Serverless Function: Signals API proxy
+// Netlify Serverless Function: persistent backend signal feed
 // Endpoint: GET /api/signals
 
 export const handler = async (event) => {
@@ -10,22 +10,22 @@ export const handler = async (event) => {
     }
   }
 
-  const backendUrl = process.env.BACKEND_API_URL
+  const backendUrl = process.env.BACKEND_API_URL?.replace(/\/+$/, '')
   if (!backendUrl) {
     return {
       statusCode: 503,
       headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
-      body: JSON.stringify({ error: 'Signals backend is not configured.' }),
+      body: JSON.stringify({ error: 'Signal backend is not configured.' }),
     }
   }
 
   try {
-    const target = new URL('/api/signals', backendUrl)
-    if (!['http:', 'https:'].includes(target.protocol)) throw new Error('Unsupported backend protocol')
-
-    const headers = {}
-    if (event.headers?.authorization) headers.Authorization = event.headers.authorization
-    const response = await fetch(target, { headers })
+    const authorization = Object.entries(event.headers || {}).find(
+      ([name]) => name.toLowerCase() === 'authorization'
+    )?.[1]
+    const response = await fetch(`${backendUrl}/api/signals`, {
+      headers: authorization ? { Authorization: authorization } : {},
+    })
 
     return {
       statusCode: response.status,
@@ -35,12 +35,12 @@ export const handler = async (event) => {
       },
       body: await response.text(),
     }
-  } catch (error) {
-    console.error('Signals backend request failed:', error.message)
+  } catch {
     return {
       statusCode: 502,
       headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
-      body: JSON.stringify({ error: 'Signals backend is unavailable.' }),
+      body: JSON.stringify({ error: 'Signal backend is unavailable.' }),
     }
   }
 }
+

@@ -6,17 +6,10 @@ import { fileURLToPath } from 'node:url'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const PORT = process.env.SF_PORT || 8080
-const WEBHOOK_SECRET = process.env.SF_WEBHOOK_SECRET || ''
+const WEBHOOK_SECRET = process.env.SF_WEBHOOK_SECRET || (process.env.NODE_ENV === 'production' ? '' : 'change-me')
 const JWT_SECRET = process.env.SF_JWT_SECRET || 'sf-capital-fx-super-jwt-secret-key-2026'
 const TG_TOKEN = process.env.SF_TELEGRAM_BOT_TOKEN || ''
 const TG_CHAT_ID = process.env.SF_TELEGRAM_CHAT_ID || ''
-
-function matchesWebhookSecret(received) {
-  if (typeof received !== 'string' || !received || !WEBHOOK_SECRET || WEBHOOK_SECRET === 'change-me') return false
-  const receivedBytes = Buffer.from(received)
-  const expectedBytes = Buffer.from(WEBHOOK_SECRET)
-  return receivedBytes.length === expectedBytes.length && crypto.timingSafeEqual(receivedBytes, expectedBytes)
-}
 
 // Data Paths
 const DATA_DIR = path.join(__dirname, 'data')
@@ -263,9 +256,9 @@ Action: ${signal.direction}
       delivery.lastError = err.message
     }
   } else {
-    // Simulated delivery for testing / standalone mode
-    delivery.status = 'SENT'
-    delivery.providerMessageId = `sim-tg-${Date.now()}`
+    delivery.status = 'UNCONFIGURED'
+    delivery.attempts = 0
+    delivery.lastError = 'Telegram bot token and chat ID are not configured.'
   }
 
   telegramDeliveries.unshift(delivery)
@@ -489,51 +482,54 @@ const server = http.createServer((req, res) => {
     readBody((err, payload) => {
       if (err || !payload || typeof payload !== 'object' || Array.isArray(payload)) {
         res.writeHead(400, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ error: 'Webhook payload must be a JSON object.' }))
+        res.end(JSON.stringify({ error: 'Invalid JSON payload' }))
         return
       }
 
-      if (!WEBHOOK_SECRET || WEBHOOK_SECRET === 'change-me') {
+      const secret = payload.secret || req.headers['x-sf-webhook-secret']
+      if (!WEBHOOK_SECRET) {
         res.writeHead(503, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ error: 'Webhook secret is not configured.' }))
         return
       }
 
-      const secret = payload.secret || req.headers['x-sf-webhook-secret']
-      if (!matchesWebhookSecret(secret)) {
+      if (!secret || secret !== WEBHOOK_SECRET) {
         res.writeHead(401, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ error: 'Invalid webhook secret token' }))
         return
       }
 
-      const pair = String(payload.pair || payload.symbol || '').toUpperCase()
-      const action = String(payload.signal || payload.action || '').toUpperCase()
+      const pair = (payload.pair || payload.symbol || '').toUpperCase()
+      const action = (payload.signal || payload.action || '').toUpperCase()
 
-      if (!/^[A-Z0-9._:-]{3,30}$/.test(pair) || (action !== 'BUY' && action !== 'SELL')) {
+      if (!/^[A-Z0-9._:-]{2,32}$/.test(pair) || (action !== 'BUY' && action !== 'SELL')) {
         res.writeHead(400, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ error: 'Instrument pair and action (BUY/SELL) are required.' }))
         return
       }
 
-      const prices = ['entry', 'sl', 'tp1', 'tp2', 'tp3'].map((key) => Number(payload[key]))
-      const [entry, sl, tp1, tp2, tp3] = prices
+      const levels = ['entry', 'sl', 'tp1', 'tp2', 'tp3'].map((key) => Number(payload[key]))
+      const [entry, sl, tp1, tp2, tp3] = levels
+      const validLevels = levels.every((level) => Number.isFinite(level) && level > 0)
       const orderedLevels = action === 'BUY'
         ? sl < entry && entry < tp1 && tp1 < tp2 && tp2 < tp3
         : sl > entry && entry > tp1 && tp1 > tp2 && tp2 > tp3
 
-      if (prices.some((price) => !Number.isFinite(price) || price <= 0) || !orderedLevels) {
+      if (!validLevels || !orderedLevels) {
         res.writeHead(400, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ error: 'Entry, stop loss, and targets must be positive finite prices in directional order.' }))
+        res.end(JSON.stringify({ error: 'Prices must be finite, positive, and ordered from stop to targets.' }))
         return
       }
 
-      const signalDate = payload.time ? new Date(payload.time) : new Date()
-      if (Number.isNaN(signalDate.getTime())) {
+      const timeframe = String(payload.timeframe || '15m')
+      const parsedSignalTime = payload.time ? new Date(payload.time) : new Date()
+      if (!/^[A-Za-z0-9]{1,16}$/.test(timeframe) || !Number.isFinite(parsedSignalTime.getTime())) {
         res.writeHead(400, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ error: 'Signal time must be a valid timestamp.' }))
+        res.end(JSON.stringify({ error: 'Timeframe or signal time is invalid.' }))
         return
       }
-      const signalTime = signalDate.toISOString()
+
+      const signalTime = parsedSignalTime.toISOString()
       const id = `tv-${pair.toLowerCase()}-${Date.now().toString().slice(-6)}`
 
       // Deduplication check
@@ -548,7 +544,7 @@ const server = http.createServer((req, res) => {
         id,
         pair,
         direction: action,
-        timeframe: payload.timeframe || '15m',
+        timeframe,
         entry,
         sl,
         tp1,
@@ -580,10 +576,18 @@ const server = http.createServer((req, res) => {
 
   // 5. Signal Milestone Lifecycle Update Endpoint
   if (req.method === 'POST' && url.pathname === '/api/signals/milestone') {
+    const authUser = getAuthUser(req)
+    if (!authUser || authUser.role !== 'admin') {
+      res.writeHead(403, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'Admin access required.' }))
+      return
+    }
+
     readBody((err, data) => {
-      if (err || !data.id || !data.status) {
+      const allowedStatuses = ['TP1_HIT', 'TP2_HIT', 'TP3_HIT', 'SL_HIT', 'CLOSED', 'CANCELLED']
+      if (err || !data?.id || !allowedStatuses.includes(data.status)) {
         res.writeHead(400, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ error: 'Signal id and status required.' }))
+        res.end(JSON.stringify({ error: 'Signal id and a valid lifecycle status are required.' }))
         return
       }
 
@@ -689,6 +693,12 @@ const server = http.createServer((req, res) => {
   }
 
   if (req.method === 'GET' && url.pathname === '/api/admin/telegram/deliveries') {
+    const authUser = getAuthUser(req)
+    if (!authUser || authUser.role !== 'admin') {
+      res.writeHead(403, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'Admin access required.' }))
+      return
+    }
     res.writeHead(200, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify(telegramDeliveries.slice(0, 100)))
     return

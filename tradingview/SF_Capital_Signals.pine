@@ -1,10 +1,10 @@
 //@version=5
-indicator("SF CAPITAL FX — Structured Signals Engine", overlay=true, precision=2)
+indicator("SF CAPITAL FX — Structured Signals Engine", overlay=true, precision=8)
 
 // ==============================================================================
 // SF CAPITAL FX — Pine Script v5 Strategy & Alert Generator
 // Pairs: XAUUSD, BTCUSD, USOIL, and Major Forex Pairs
-// Target: https://sfcapitalfx.netlify.app/api/webhooks/tradingview
+// Target: https://sfcapitalsf.netlify.app/api/webhooks/tradingview
 // ==============================================================================
 
 // --- User Inputs ---
@@ -67,10 +67,16 @@ plot(emaSlow, "Slow EMA (50)", color=color.new(#c38d35, 0), linewidth=2)
 plotshape(buySignal, title="BUY Alert", location=location.belowbar, color=#11a879, style=shape.triangleup, size=size.small, text="SF BUY")
 plotshape(sellSignal, title="SELL Alert", location=location.abovebar, color=#d9534f, style=shape.triangledown, size=size.small, text="SF SELL")
 
-// alertcondition() requires a constant message; alert() supports this runtime JSON.
-buildAlertJson(string direction) =>
+// alert() supports the dynamic JSON required by the webhook receiver.
+buildAlertJson(direction) =>
     '{"secret":"' + webhookSecret + '","pair":"' + syminfo.ticker + '","signal":"' + direction + '","timeframe":"' + timeframe.period + '","entry":' + str.tostring(entryPrice, format.mintick) + ',"sl":' + str.tostring(stopLossPrice, format.mintick) + ',"tp1":' + str.tostring(tp1Price, format.mintick) + ',"tp2":' + str.tostring(tp2Price, format.mintick) + ',"tp3":' + str.tostring(tp3Price, format.mintick) + ',"time":"' + str.format_time(time_close, "yyyy-MM-dd'T'HH:mm:ss'Z'", "UTC") + '"}'
 
-if (buySignal or sellSignal) and str.length(webhookSecret) > 0
-    alert(buildAlertJson(activeDirection), alert.freq_once_per_bar_close)
+if buySignal and webhookSecret != ""
+    alert(buildAlertJson("BUY"), alert.freq_once_per_bar_close)
+if sellSignal and webhookSecret != ""
+    alert(buildAlertJson("SELL"), alert.freq_once_per_bar_close)
+
+// These static conditions provide chart alerts; select "Any alert() function call" for webhook JSON.
+alertcondition(buySignal, title="SF CAPITAL BUY Alert", message="BUY setup confirmed. Select Any alert() function call for the JSON webhook payload.")
+alertcondition(sellSignal, title="SF CAPITAL SELL Alert", message="SELL setup confirmed. Select Any alert() function call for the JSON webhook payload.")
 

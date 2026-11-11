@@ -162,6 +162,24 @@ async function runTests() {
     assert(res.status === 401, `Expected status 401, got ${res.status}`)
   })
 
+  await test('POST /api/webhooks/tradingview rejects invalid directional price levels', async () => {
+    const res = await fetch(`${BASE_URL}/api/webhooks/tradingview`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        secret: 'change-me',
+        pair: 'XAUUSD',
+        signal: 'BUY',
+        entry: 2688,
+        sl: 2690,
+        tp1: 2698,
+        tp2: 2710,
+        tp3: 2725,
+      }),
+    })
+    assert(res.status === 400, `Expected status 400, got ${res.status}`)
+  })
+
   // 8. TradingView Webhook Valid Ingestion
   await test('POST /api/webhooks/tradingview ingests valid alert and returns 201 Created', async () => {
     const timestamp = new Date().toISOString()
@@ -212,10 +230,22 @@ async function runTests() {
   })
 
   // 10. Milestone Progression
-  await test('POST /api/signals/milestone advances signal lifecycle to TP1_HIT', async () => {
+  await test('POST /api/signals/milestone rejects requests without an admin token', async () => {
     const res = await fetch(`${BASE_URL}/api/signals/milestone`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: createdSignalId, status: 'TP1_HIT', price: 2698.0 }),
+    })
+    assert(res.status === 403, `Expected status 403, got ${res.status}`)
+  })
+
+  await test('POST /api/signals/milestone advances signal lifecycle to TP1_HIT', async () => {
+    const res = await fetch(`${BASE_URL}/api/signals/milestone`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${adminToken}`,
+      },
       body: JSON.stringify({
         id: createdSignalId,
         status: 'TP1_HIT',
@@ -240,6 +270,11 @@ async function runTests() {
   })
 
   // 12. Telegram Outbox & Audit Logs
+  await test('GET /api/admin/telegram/deliveries rejects requests without an admin token', async () => {
+    const res = await fetch(`${BASE_URL}/api/admin/telegram/deliveries`)
+    assert(res.status === 403, `Expected status 403, got ${res.status}`)
+  })
+
   await test('GET /api/admin/telegram/deliveries logs outbox dispatch entries', async () => {
     const res = await fetch(`${BASE_URL}/api/admin/telegram/deliveries`, {
       headers: { Authorization: `Bearer ${adminToken}` },
@@ -247,7 +282,10 @@ async function runTests() {
     assert(res.status === 200, `Expected status 200, got ${res.status}`)
     const deliveries = await res.json()
     assert(Array.isArray(deliveries) && deliveries.length > 0, 'Deliveries array expected')
-    assert(deliveries[0].status === 'SENT' || deliveries[0].status === 'PENDING', 'Valid delivery status expected')
+    assert(
+      ['SENT', 'PENDING', 'UNCONFIGURED'].includes(deliveries[0].status),
+      'Valid delivery status expected'
+    )
   })
 
   console.log('\n======================================================')
